@@ -550,3 +550,17 @@ The relay should not directly mutate Unity/Fusion objects. It can persist server
 5. Add the endpoint UI and make layer selection explicit. Do not switch the default until relay and client versions interoperate in a two-client Fusion connection test.
 6. Verify real game flows in order: player join/catch-up, scene transition, prop spawn/pose/ownership, constraints/seats, avatar change, settings/gamemode, voice, leave, and pseudo-host departure.
 7. Only after the transport and session lifecycle are stable, add relay-persisted settings, admin policy, votes, MOTD/chat/commands, and mod admission rules.
+
+## Follow-Up Fixes (2026-10-06)
+
+Hardening round applied to `RefusionRelay/Program.cs` and the client layer:
+
+- Prototype finding 1 (no heartbeat): resolved — the client sends `Ping` every 5 seconds (`LabFusion/src/Network/Layers/Steam/SteamNetworkLayer.cs`).
+- Prototype finding 12 (targeted disconnect): resolved — the client sends a `Kick` relay request and the relay removes the target.
+- Prototype finding 5 (client-asserted `PlatformId`): resolved — the relay ignores the client-supplied `PlatformId` and always derives it from the persistent UUID; duplicate-session detection is UUID-only.
+- Session token (protocol version 2): `Welcome` carries a random `SessionToken`; every post-Hello packet must echo it or it is dropped silently. `Hello` and `Query` stay token-free.
+- Relay data files are anchored next to the relay executable (`refusion-server-state.json`, `refusion-server-settings.json`, `refusion-server-access.json`) instead of the process working directory.
+- Per-client packet budget: 500 packets/s sustained, 1500 burst, sized from the measured worst-case client traffic (~400 packets/s).
+- Relay stability: the receive loop and shutdown path no longer die on `SocketException` (including the Windows `SIO_UDP_CONNRESET` behavior), console/cleanup tasks contain per-iteration exceptions, and all JSON persistence uses atomic temp-file writes.
+- Console input is read on a background task. Previously `Console.In.ReadLineAsync` blocked inline when stdin was a redirected pipe (service/nohup deployments), which stalled `RunAsync` before the receive loop ever started — the relay accepted no packets at all in that configuration.
+- Deliberately unchanged: the relay's OWNER kick/ban bypass (all moderation packets are emitted by the pseudo-host after its own `FusionPermissions` check; removing the owner branch would break in-game moderation until the admin/vote redesign), stale-session reconnect rejection, and `PersistentPlayerId` in `PlayerJoined` broadcasts (the client uses it for unban).

@@ -58,6 +58,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
     private byte _smallId;
     private int _ownerClientId;
     private bool _isRelayOperator;
+    private string _sessionToken = string.Empty;
     private DateTime _lastPingUtc;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentQueue<RelayPacket> _receivedPackets = new();
@@ -67,7 +68,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
     private static readonly ConcurrentDictionary<ulong, string> _relayPersistentIds = new();
 
     private const string _serverVersion = "0.1.0";
-    private const int _protocolVersion = 1;
+    private const int _protocolVersion = 2;
 
     // A local reference to a lobby
     // This isn't actually used for joining servers, just for matchmaking
@@ -261,6 +262,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
         _receiveSource = null;
         _clientId = 0;
         _smallId = 0;
+        _sessionToken = string.Empty;
         _relaySmallIds.Clear();
         _relayOperators.Clear();
         _relayPersistentIds.Clear();
@@ -345,6 +347,9 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
         {
             var _reason = packet.Reason ?? "Dedicated server rejected the connection.";
             if (string.Equals(_reason, "version_mismatch", StringComparison.OrdinalIgnoreCase)) _reason = $"Version mismatch. Client version: {_serverVersion}. Server version: {packet.ServerVersion ?? "unknown"}.";
+            else if (string.Equals(_reason, "invalid_client", StringComparison.OrdinalIgnoreCase)) _reason = "The connection to the dedicated server was lost.";
+            else if (string.Equals(_reason, "duplicate_player_identity", StringComparison.OrdinalIgnoreCase)) _reason = "Your identity is still connected. Wait a few seconds and try again.";
+            else if (string.Equals(_reason, "invalid_persistent_player_id", StringComparison.OrdinalIgnoreCase)) _reason = "The server could not read your player identity.";
             Disconnect(_reason);
             return;
         }
@@ -353,6 +358,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
             _clientId = packet.ClientId;
             _smallId = packet.SmallId;
             _ownerClientId = packet.OwnerClientId;
+            _sessionToken = packet.SessionToken;
             _isServerActive = _smallId == 0;
             _isRelayOperator = packet.IsOperator;
             PlayerIDManager.SetLongID(packet.PlatformId == 0 ? PlayerIDManager.LocalPlatformID : packet.PlatformId);
@@ -489,6 +495,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
         if (_udpClient == null || _relayEndpoint == null) return;
         try
         {
+            packet.SessionToken = _sessionToken;
             var _bytes = JsonSerializer.SerializeToUtf8Bytes(packet, _jsonOptions);
             _udpClient.Send(_bytes, _bytes.Length, _relayEndpoint);
         }
@@ -533,6 +540,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
         public int ProtocolVersion { get; set; }
         public ulong PlatformId { get; set; }
         public string PersistentPlayerId { get; set; } = string.Empty;
+        public string SessionToken { get; set; } = string.Empty;
         public string ServerVersion { get; set; } = string.Empty;
         public string Name { get; set; } = string.Empty;
         public string Payload { get; set; } = string.Empty;

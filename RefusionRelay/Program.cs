@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Security.Cryptography;
 
 namespace RefusionRelay;
@@ -12,7 +13,14 @@ internal static class Program
     private static async Task Main(string[] args)
     {
         var _port = GetPort(args);
-        var _server = new RelayServer(_port);
+        RelayServer _server;
+        try { _server = new RelayServer(_port); }
+        catch (SocketException _exception)
+        {
+            Console.Error.WriteLine($"Could not bind UDP port {_port}: {_exception.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
         Console.CancelKeyPress += (_, _event) =>
         {
             _event.Cancel = true;
@@ -31,16 +39,18 @@ internal static class Program
 internal sealed class RelayServer
 {
     private const string _serverVersion = "0.1.0";
-    private const int _protocolVersion = 1;
+    private const int _protocolVersion = 2;
     private static readonly TimeSpan _clientTimeout = TimeSpan.FromSeconds(15);
-    private const string _stateFileName = "refusion-server-state.json";
-    private const string _settingsFileName = "refusion-server-settings.json";
-    private const string _accessFileName = "refusion-server-access.json";
     private readonly string _logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+    private readonly string _stateFilePath = Path.Combine(AppContext.BaseDirectory, "refusion-server-state.json");
+    private readonly string _settingsFilePath = Path.Combine(AppContext.BaseDirectory, "refusion-server-settings.json");
+    private readonly string _accessFilePath = Path.Combine(AppContext.BaseDirectory, "refusion-server-access.json");
     private readonly UdpClient _socket;
     private readonly ConcurrentDictionary<int, RelayClient> _clients = new();
-    private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
     private readonly object _gate = new();
+    private readonly object _logGate = new();
+    private readonly ConcurrentDictionary<string, DateTime> _logLimits = new();
     private readonly string _serverId;
     private readonly RelaySettings _settings;
     private readonly RelayAccessList _accessList;
@@ -57,6 +67,11 @@ internal sealed class RelayServer
     public RelayServer(int port)
     {
         _socket = new UdpClient(new IPEndPoint(IPAddress.Any, port));
+        if (OperatingSystem.IsWindows())
+        {
+            // SIO_UDP_CONNRESET: an ICMP port-unreachable must not abort pending receives on Windows.
+            try { _socket.Client.IOControl(unchecked((int)0x9800000C), new byte[4], null); } catch { }
+        }
         _settings = LoadSettings();
         _accessList = LoadAccessList();
         var _state = LoadState();
@@ -77,8 +92,11 @@ internal sealed class RelayServer
         Log("INFO", $"Server ID: {_serverId}");
         Log("INFO", $"Listening: {_socket.Client.LocalEndPoint}");
         Log("INFO", $"Log file: {GetLogPath()}");
+        Log("INFO", $"State file: {_stateFilePath}");
+        Log("INFO", $"Settings file: {_settingsFilePath}");
+        Log("INFO", $"Access file: {_accessFilePath}");
         var _cleanupTask = CleanupAsync(_stopSource.Token);
-        var _consoleTask = ReadConsoleAsync(_stopSource.Token);
+        var _consoleTask = Task.Run(() => ReadConsoleAsync(_stopSource.Token));
         try
         {
             while (!_stopSource.IsCancellationRequested)
@@ -86,6 +104,13 @@ internal sealed class RelayServer
                 UdpReceiveResult _packet;
                 try { _packet = await _socket.ReceiveAsync(_stopSource.Token); }
                 catch (OperationCanceledException) { break; }
+                catch (ObjectDisposedException) { break; }
+                catch (SocketException _exception)
+                {
+                    if (_stopSource.IsCancellationRequested) break;
+                    LogRateLimited("receive", "WARN", $"Receive failed: {_exception.SocketErrorCode}");
+                    continue;
+                }
                 try { await HandlePacketAsync(_packet); }
                 catch (Exception _exception) { Log("ERROR", $"Packet handling failed: {_exception}"); }
             }
@@ -93,8 +118,11 @@ internal sealed class RelayServer
         finally
         {
             _stopSource.Cancel();
-            try { await _cleanupTask; } catch (OperationCanceledException) { }
-            try { await _consoleTask; } catch (OperationCanceledException) { }
+            try { await _cleanupTask; } catch (Exception _exception) { Log("ERROR", $"Cleanup task failed: {_exception.Message}"); }
+            if (_consoleTask.IsCompleted)
+            {
+                try { await _consoleTask; } catch (Exception _exception) { Log("ERROR", $"Console task failed: {_exception.Message}"); }
+            }
             _socket.Dispose();
         }
     }
@@ -110,7 +138,6 @@ internal sealed class RelayServer
     {
         if (_stopSource.IsCancellationRequested) return;
         _stopSource.Cancel();
-        _socket.Close();
     }
 
     private async Task HandlePacketAsync(UdpReceiveResult packet)
@@ -137,8 +164,18 @@ internal sealed class RelayServer
             await SendAsync(packet.RemoteEndPoint, new RelayPacket { Type = "Reject", Reason = "invalid_client" });
             return;
         }
+        if (!string.Equals(_message.SessionToken, _client.SessionToken, StringComparison.Ordinal))
+        {
+            LogRateLimited("token", "WARN", $"Dropped a packet with an invalid session token from {packet.RemoteEndPoint}");
+            return;
+        }
 
         _client.LastSeenUtc = DateTime.UtcNow;
+        if (!_client.TryConsumePacketBudget())
+        {
+            LogRateLimited($"budget:{_client.ClientId}", "WARN", $"Rate limit exceeded by {_client.Name} ({_client.PersistentPlayerId})");
+            return;
+        }
         if (_message.Type.Equals("Ping", StringComparison.OrdinalIgnoreCase))
         {
             await SendAsync(_client.EndPoint, CreateStatePacket("Pong", _client));
@@ -163,7 +200,7 @@ internal sealed class RelayServer
         }
         if (_message.Type.Equals("Unban", StringComparison.OrdinalIgnoreCase))
         {
-            await HandleUnbanRequestAsync(_client, _message);
+            HandleUnbanRequestAsync(_client, _message);
             return;
         }
         if (_message.Type.Equals("ServerCommandResult", StringComparison.OrdinalIgnoreCase))
@@ -213,7 +250,7 @@ internal sealed class RelayServer
         {
             if (_clients.Values.FirstOrDefault(_value => _value.EndPoint.Equals(endpoint)) is { } _existing)
             {
-                if (!_existing.PersistentPlayerId.Equals(_playerId, StringComparison.OrdinalIgnoreCase) || (_existing.PlatformId != 0 && message.PlatformId != 0 && _existing.PlatformId != message.PlatformId))
+                if (!_existing.PersistentPlayerId.Equals(_playerId, StringComparison.OrdinalIgnoreCase))
                 {
                     _client = null;
                 }
@@ -223,7 +260,7 @@ internal sealed class RelayServer
                     _client = _existing;
                 }
             }
-            else if (_clients.Values.Any(_value => _value.PersistentPlayerId.Equals(_playerId, StringComparison.OrdinalIgnoreCase) || (message.PlatformId != 0 && _value.PlatformId == message.PlatformId)))
+            else if (_clients.Values.Any(_value => _value.PersistentPlayerId.Equals(_playerId, StringComparison.OrdinalIgnoreCase)))
             {
                 _client = null;
             }
@@ -231,7 +268,7 @@ internal sealed class RelayServer
             {
                 var _clientId = Interlocked.Increment(ref _nextClientId);
                 var _isOwner = _ownerClientId is null;
-                _client = new RelayClient(_clientId, GetSmallId(_isOwner), endpoint, string.IsNullOrWhiteSpace(message.Name) ? $"Player{_clientId}" : message.Name, GetPlatformId(message.PlatformId, _playerId), _playerId);
+                _client = new RelayClient(_clientId, GetSmallId(_isOwner), endpoint, GetSanitizedText(message.Name, 32, $"Player{_clientId}"), GetPlatformId(_playerId), _playerId);
                 _clients[_client.ClientId] = _client;
                 if (_isOwner) _ownerClientId = _client.ClientId;
                 _created = true;
@@ -244,7 +281,7 @@ internal sealed class RelayServer
             return;
         }
 
-        await SendAsync(endpoint, new RelayPacket { Type = "Welcome", ClientId = _client.ClientId, SmallId = _client.SmallId, OwnerClientId = _ownerClientId ?? 0, ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion, Name = _client.Name, PlatformId = _client.PlatformId, PersistentPlayerId = _client.PersistentPlayerId, IsOperator = IsOperator(_client.PersistentPlayerId) });
+        await SendAsync(endpoint, new RelayPacket { Type = "Welcome", ClientId = _client.ClientId, SmallId = _client.SmallId, OwnerClientId = _ownerClientId ?? 0, ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion, Name = _client.Name, PlatformId = _client.PlatformId, PersistentPlayerId = _client.PersistentPlayerId, IsOperator = IsOperator(_client.PersistentPlayerId), SessionToken = _client.SessionToken });
         if (_created) Log("INFO", $"Player joined: {_client.Name}, id={_client.SmallId}, uuid={_client.PersistentPlayerId}, endpoint={endpoint}");
         if (!string.IsNullOrWhiteSpace(_levelBarcode)) await SendAsync(endpoint, CreateStatePacket("SceneState", _client));
         if (!string.IsNullOrWhiteSpace(_settingsJson)) await SendAsync(endpoint, new RelayPacket { Type = "SettingsState", SettingsJson = _settingsJson });
@@ -319,7 +356,7 @@ internal sealed class RelayServer
                 ? _clients.Values.FirstOrDefault(_client => _client.PersistentPlayerId.Equals(message.PersistentPlayerId, StringComparison.OrdinalIgnoreCase))
                 : null;
         if (_target is null || _target.ClientId == requester.ClientId) return;
-        var _reason = string.IsNullOrWhiteSpace(message.Reason) ? "Kicked from server." : message.Reason;
+        var _reason = GetSanitizedText(message.Reason, 256, "Kicked from server.");
         await SendAsync(_target.EndPoint, new RelayPacket { Type = "Reject", Reason = _reason });
         Log("INFO", $"Player kicked: {_target.Name} ({_target.PersistentPlayerId}) by {requester.Name} ({requester.PersistentPlayerId}): {_reason}");
         await RemoveClientAsync(_target, true);
@@ -330,7 +367,7 @@ internal sealed class RelayServer
         if (requester.ClientId != _ownerClientId && !IsOperator(requester.PersistentPlayerId)) return;
         var _target = _clients.Values.FirstOrDefault(_client => _client.SmallId == message.TargetSmallId);
         if (_target is null || _target.ClientId == requester.ClientId) return;
-        var _reason = string.IsNullOrWhiteSpace(message.Reason) ? "Banned by server administrator." : message.Reason;
+        var _reason = GetSanitizedText(message.Reason, 256, "Banned by server administrator.");
         lock (_gate)
         {
             _accessList.Bans.RemoveAll(_entry => _entry.PlayerId.Equals(_target.PersistentPlayerId, StringComparison.OrdinalIgnoreCase));
@@ -342,14 +379,13 @@ internal sealed class RelayServer
         Log("INFO", $"Player banned: {_target.Name} ({_target.PersistentPlayerId}): {_reason}");
     }
 
-    private async Task HandleUnbanRequestAsync(RelayClient requester, RelayPacket message)
+    private void HandleUnbanRequestAsync(RelayClient requester, RelayPacket message)
     {
         if (requester.ClientId != _ownerClientId && !IsOperator(requester.PersistentPlayerId)) return;
         if (string.IsNullOrWhiteSpace(message.PersistentPlayerId)) return;
         lock (_gate) _accessList.Bans.RemoveAll(_entry => _entry.PlayerId.Equals(message.PersistentPlayerId, StringComparison.OrdinalIgnoreCase));
         SaveAccessList();
         Log("INFO", $"Player unbanned: {message.PersistentPlayerId}");
-        await Task.CompletedTask;
     }
 
     private byte GetSmallId(bool isOwner)
@@ -370,12 +406,24 @@ internal sealed class RelayServer
 
     private bool IsOperator(string playerId) { lock (_gate) return _accessList.Operators.Any(_entry => _entry.PlayerId.Equals(playerId, StringComparison.OrdinalIgnoreCase)); }
 
-    private static ulong GetPlatformId(ulong platformId, string playerId)
+    private static ulong GetPlatformId(string playerId)
     {
-        if (platformId != 0) return platformId;
         var _bytes = SHA256.HashData(Guid.Parse(playerId).ToByteArray());
         var _id = BitConverter.ToUInt64(_bytes, 0);
         return _id == 0 ? 1 : _id;
+    }
+
+    private static string GetSanitizedText(string? value, int maxLength, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return fallback;
+        var _builder = new StringBuilder(value.Length);
+        foreach (var _character in value)
+        {
+            if (!char.IsControl(_character)) _builder.Append(_character);
+        }
+        var _text = _builder.ToString().Trim();
+        if (_text.Length == 0) return fallback;
+        return _text.Length > maxLength ? _text[..maxLength] : _text;
     }
 
     private async Task CleanupAsync(CancellationToken token)
@@ -385,7 +433,11 @@ internal sealed class RelayServer
         {
             foreach (var _client in _clients.Values)
             {
-                if (DateTime.UtcNow - _client.LastSeenUtc > _clientTimeout) await RemoveClientAsync(_client, true);
+                try
+                {
+                    if (DateTime.UtcNow - _client.LastSeenUtc > _clientTimeout) await RemoveClientAsync(_client, true);
+                }
+                catch (Exception _exception) { Log("ERROR", $"Client cleanup failed: {_exception.Message}"); }
             }
         }
     }
@@ -394,9 +446,13 @@ internal sealed class RelayServer
     {
         while (!token.IsCancellationRequested)
         {
-            var _line = await Console.In.ReadLineAsync(token);
+            string? _line;
+            try { _line = await Console.In.ReadLineAsync(token); }
+            catch (OperationCanceledException) { return; }
+            catch (Exception _exception) { Log("ERROR", $"Console input failed: {_exception.Message}"); return; }
             if (_line is null) return;
-            await HandleConsoleCommandAsync(_line);
+            try { await HandleConsoleCommandAsync(_line); }
+            catch (Exception _exception) { Log("ERROR", $"Console command failed: {_exception}"); }
         }
     }
 
@@ -420,7 +476,7 @@ internal sealed class RelayServer
         if (_command == "list") { await HandleConsoleCommandAsync("players"); return; }
         if (_command == "status")
         {
-            Console.WriteLine($"Players: {_clients.Count}/255");
+            Console.WriteLine($"Players: {_clients.Count}/{_settings.MaxPlayers}");
             Console.WriteLine($"Level: {_levelBarcode}");
             Console.WriteLine($"Gamemode: {_settings.GamemodeTitle ?? "Sandbox"}");
             Console.WriteLine($"MOTD: {_motd}");
@@ -467,7 +523,7 @@ internal sealed class RelayServer
         }
         if (_command is "motd" or "messageoftheday")
         {
-            _motd = _parts.Length < 2 || string.Equals(_parts[1], "none", StringComparison.OrdinalIgnoreCase) ? string.Empty : line[(line.IndexOf(' ') + 1)..].Trim();
+            _motd = _parts.Length < 2 || string.Equals(_parts[1], "none", StringComparison.OrdinalIgnoreCase) ? string.Empty : GetSanitizedText(line[(line.IndexOf(' ') + 1)..].Trim(), 512, string.Empty);
             SaveState();
             await BroadcastAllAsync(new RelayPacket { Type = "Motd", Reason = _motd });
             Log("INFO", $"MOTD updated: {_motd}");
@@ -476,7 +532,8 @@ internal sealed class RelayServer
         if (_command is "say" or "broadcast")
         {
             if (_parts.Length < 2) return;
-            var _text = line[(line.IndexOf(' ') + 1)..].Trim();
+            var _text = GetSanitizedText(line[(line.IndexOf(' ') + 1)..].Trim(), 256, string.Empty);
+            if (_text.Length == 0) return;
             await BroadcastAllAsync(new RelayPacket { Type = "Chat", Name = "Server", Reason = _text });
             Log("INFO", $"Server say: {_text}");
             return;
@@ -507,7 +564,7 @@ internal sealed class RelayServer
         {
             var _target = _clients.Values.FirstOrDefault(_entry => _entry.PersistentPlayerId.Equals(_targetId, StringComparison.OrdinalIgnoreCase));
             if (_target is null) { Log("WARN", $"Kick target is not connected: {_targetId}"); return; }
-            var _reason = _parts.Length == 3 ? _parts[2] : "Kicked by server administrator.";
+            var _reason = GetSanitizedText(_parts.Length == 3 ? _parts[2] : null, 256, "Kicked by server administrator.");
             await SendAsync(_target.EndPoint, new RelayPacket { Type = "Reject", Reason = _reason });
             await RemoveClientAsync(_target, true);
             Log("INFO", $"Player kicked from console: {_target.Name} ({_targetId}): {_reason}");
@@ -518,8 +575,8 @@ internal sealed class RelayServer
             lock (_gate)
             {
                 if (!_accessList.Operators.Any(_entry => _entry.PlayerId.Equals(_targetId, StringComparison.OrdinalIgnoreCase))) _accessList.Operators.Add(new RelayOperatorEntry { PlayerId = _targetId });
-                SaveAccessList();
             }
+            SaveAccessList();
             await BroadcastPermissionStateAsync(_targetId, true);
             Log("INFO", $"Operator added: {_targetId}");
             return;
@@ -529,21 +586,21 @@ internal sealed class RelayServer
             lock (_gate)
             {
                 _accessList.Operators.RemoveAll(_entry => _entry.PlayerId.Equals(_targetId, StringComparison.OrdinalIgnoreCase));
-                SaveAccessList();
             }
+            SaveAccessList();
             await BroadcastPermissionStateAsync(_targetId, false);
             Log("INFO", $"Operator removed: {_targetId}");
             return;
         }
         if (_command == "ban")
         {
-            var _reason = _parts.Length == 3 ? _parts[2] : "Banned by server administrator.";
+            var _reason = GetSanitizedText(_parts.Length == 3 ? _parts[2] : null, 256, "Banned by server administrator.");
             lock (_gate)
             {
                 _accessList.Bans.RemoveAll(_entry => _entry.PlayerId.Equals(_targetId, StringComparison.OrdinalIgnoreCase));
                 _accessList.Bans.Add(new RelayBanEntry { PlayerId = _targetId, Reason = _reason, CreatedUtc = DateTime.UtcNow });
-                SaveAccessList();
             }
+            SaveAccessList();
             var _client = _clients.Values.FirstOrDefault(_entry => _entry.PersistentPlayerId.Equals(_targetId, StringComparison.OrdinalIgnoreCase));
             if (_client is not null)
             {
@@ -558,8 +615,8 @@ internal sealed class RelayServer
             lock (_gate)
             {
                 _accessList.Bans.RemoveAll(_entry => _entry.PlayerId.Equals(_targetId, StringComparison.OrdinalIgnoreCase));
-                SaveAccessList();
             }
+            SaveAccessList();
             Log("INFO", $"Player unbanned: {_targetId}");
             return;
         }
@@ -609,21 +666,24 @@ internal sealed class RelayServer
 
     private async Task ResetSessionAsync(RelayClient owner, byte previousSmallId)
     {
+        _isLoading = false;
         await BroadcastAllAsync(new RelayPacket { Type = "SessionReset", ClientId = owner.ClientId, SmallId = previousSmallId, OwnerClientId = 0, SessionResetRequired = true });
         foreach (var _client in _clients.Values.ToList()) _clients.TryRemove(_client.ClientId, out _);
     }
 
     private async Task BroadcastAsync(RelayClient sender, RelayPacket message)
     {
+        var _bytes = SerializePacket(message);
         foreach (var _client in _clients.Values)
         {
-            if (_client.ClientId != sender.ClientId) await SendAsync(_client.EndPoint, message);
+            if (_client.ClientId != sender.ClientId) await SendBytesAsync(_client.EndPoint, _bytes);
         }
     }
 
     private async Task BroadcastAllAsync(RelayPacket message)
     {
-        foreach (var _client in _clients.Values) await SendAsync(_client.EndPoint, message);
+        var _bytes = SerializePacket(message);
+        foreach (var _client in _clients.Values) await SendBytesAsync(_client.EndPoint, _bytes);
     }
 
     private async Task SendToSmallIdAsync(byte smallId, RelayPacket message)
@@ -634,26 +694,43 @@ internal sealed class RelayServer
 
     private async Task BroadcastExceptSmallIdAsync(byte excludedSmallId, RelayPacket message)
     {
+        var _bytes = SerializePacket(message);
         foreach (var _client in _clients.Values)
         {
-            if (_client.SmallId != excludedSmallId) await SendAsync(_client.EndPoint, message);
+            if (_client.SmallId != excludedSmallId) await SendBytesAsync(_client.EndPoint, _bytes);
         }
     }
 
-    private async Task SendAsync(IPEndPoint endpoint, RelayPacket message)
+    private async Task SendAsync(IPEndPoint endpoint, RelayPacket message) => await SendBytesAsync(endpoint, SerializePacket(message));
+
+    private async Task SendBytesAsync(IPEndPoint endpoint, byte[] bytes)
     {
-        var _bytes = JsonSerializer.SerializeToUtf8Bytes(message, _jsonOptions);
-        await _socket.SendAsync(_bytes, _bytes.Length, endpoint);
+        try { await _socket.SendAsync(bytes, bytes.Length, endpoint); }
+        catch (SocketException _exception) { LogRateLimited("send", "WARN", $"Send to {endpoint} failed: {_exception.SocketErrorCode}"); }
+        catch (ObjectDisposedException) { }
     }
+
+    private byte[] SerializePacket(RelayPacket message) => JsonSerializer.SerializeToUtf8Bytes(message, _jsonOptions);
 
     private string GetLogPath() => Path.Combine(_logDirectory, $"relay-{DateTime.UtcNow:yyyy-MM-dd}.log");
 
     private void Log(string level, string message)
     {
         var _line = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} UTC] [{level}] {message}";
-        Console.WriteLine(_line);
-        try { File.AppendAllText(GetLogPath(), _line + Environment.NewLine, Encoding.UTF8); }
-        catch (Exception _exception) { Console.Error.WriteLine($"Could not write relay log: {_exception.Message}"); }
+        lock (_logGate)
+        {
+            Console.WriteLine(_line);
+            try { File.AppendAllText(GetLogPath(), _line + Environment.NewLine, Encoding.UTF8); }
+            catch (Exception _exception) { Console.Error.WriteLine($"Could not write relay log: {_exception.Message}"); }
+        }
+    }
+
+    private void LogRateLimited(string category, string level, string message)
+    {
+        var _now = DateTime.UtcNow;
+        if (_logLimits.TryGetValue(category, out var _lastUtc) && _now - _lastUtc < TimeSpan.FromSeconds(5)) return;
+        _logLimits[category] = _now;
+        Log(level, message);
     }
 
     private RelayPacket CreateStatePacket(string type, RelayClient client)
@@ -701,8 +778,8 @@ internal sealed class RelayServer
     {
         try
         {
-            if (!File.Exists(_stateFileName)) return new RelayState();
-            return JsonSerializer.Deserialize<RelayState>(File.ReadAllBytes(_stateFileName), _jsonOptions) ?? new RelayState();
+            if (!File.Exists(_stateFilePath)) return new RelayState();
+            return JsonSerializer.Deserialize<RelayState>(File.ReadAllBytes(_stateFilePath), _jsonOptions) ?? new RelayState();
         }
         catch
         {
@@ -714,14 +791,14 @@ internal sealed class RelayServer
     {
         try
         {
-            if (!File.Exists(_settingsFileName))
+            if (!File.Exists(_settingsFilePath))
             {
                 var _defaultSettings = new RelaySettings();
-                File.WriteAllBytes(_settingsFileName, JsonSerializer.SerializeToUtf8Bytes(_defaultSettings, _jsonOptions));
+                SaveJsonFile(_settingsFilePath, _defaultSettings);
                 return _defaultSettings;
             }
 
-            return JsonSerializer.Deserialize<RelaySettings>(File.ReadAllBytes(_settingsFileName), _jsonOptions) ?? new RelaySettings();
+            return JsonSerializer.Deserialize<RelaySettings>(File.ReadAllBytes(_settingsFilePath), _jsonOptions) ?? new RelaySettings();
         }
         catch
         {
@@ -733,38 +810,38 @@ internal sealed class RelayServer
     {
         try
         {
-            if (!File.Exists(_accessFileName))
+            if (!File.Exists(_accessFilePath))
             {
                 var _defaultAccessList = new RelayAccessList();
-                SaveAccessList(_defaultAccessList);
+                SaveJsonFile(_accessFilePath, _defaultAccessList);
                 return _defaultAccessList;
             }
-            var _accessList = JsonSerializer.Deserialize<RelayAccessList>(File.ReadAllBytes(_accessFileName), _jsonOptions) ?? new RelayAccessList();
+            var _accessList = JsonSerializer.Deserialize<RelayAccessList>(File.ReadAllBytes(_accessFilePath), _jsonOptions) ?? new RelayAccessList();
             _accessList.Operators ??= new List<RelayOperatorEntry>();
             _accessList.Bans ??= new List<RelayBanEntry>();
             return _accessList;
         }
         catch
         {
-            Console.WriteLine($"Failed to read {_accessFileName}; starting with an empty access list.");
+            Console.WriteLine($"Failed to read {_accessFilePath}; starting with an empty access list.");
             return new RelayAccessList();
         }
     }
 
-    private void SaveAccessList() => SaveAccessList(_accessList);
+    private void SaveAccessList() => SaveJsonFile(_accessFilePath, _accessList);
 
-    private void SaveAccessList(RelayAccessList accessList)
+    private void SaveJsonFile<T>(string path, T value)
     {
-        var _tempPath = $"{_accessFileName}.tmp";
+        var _tempPath = $"{path}.tmp";
         try
         {
-            File.WriteAllBytes(_tempPath, JsonSerializer.SerializeToUtf8Bytes(accessList, _jsonOptions));
-            File.Move(_tempPath, _accessFileName, true);
+            File.WriteAllBytes(_tempPath, JsonSerializer.SerializeToUtf8Bytes(value, _jsonOptions));
+            File.Move(_tempPath, path, true);
         }
         catch (Exception _exception)
         {
             try { if (File.Exists(_tempPath)) File.Delete(_tempPath); } catch { }
-            Console.WriteLine($"Failed to save {_accessFileName}: {_exception.Message}");
+            Log("ERROR", $"Failed to save {path}: {_exception.Message}");
         }
     }
 
@@ -778,17 +855,19 @@ internal sealed class RelayServer
             SettingsJson = _settingsJson,
             Motd = _motd
         };
-        File.WriteAllBytes(_stateFileName, JsonSerializer.SerializeToUtf8Bytes(_state, _jsonOptions));
+        SaveJsonFile(_stateFilePath, _state);
     }
 
-    private void SaveSettings()
-    {
-        File.WriteAllBytes(_settingsFileName, JsonSerializer.SerializeToUtf8Bytes(_settings, _jsonOptions));
-    }
+    private void SaveSettings() => SaveJsonFile(_settingsFilePath, _settings);
 }
 
 internal sealed class RelayClient
 {
+    private const double _packetsPerSecond = 500;
+    private const double _burstPackets = 1500;
+    private double _packetTokens = _burstPackets;
+    private DateTime _packetRefillUtc = DateTime.UtcNow;
+
     public RelayClient(int clientId, byte smallId, IPEndPoint endPoint, string name, ulong platformId, string persistentPlayerId)
     {
         ClientId = clientId;
@@ -797,6 +876,7 @@ internal sealed class RelayClient
         Name = name;
         PlatformId = platformId;
         PersistentPlayerId = persistentPlayerId;
+        SessionToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
         LastSeenUtc = DateTime.UtcNow;
     }
 
@@ -806,7 +886,22 @@ internal sealed class RelayClient
     public string Name { get; }
     public ulong PlatformId { get; }
     public string PersistentPlayerId { get; }
+    public string SessionToken { get; }
     public DateTime LastSeenUtc { get; set; }
+
+    public bool TryConsumePacketBudget()
+    {
+        var _now = DateTime.UtcNow;
+        var _elapsed = (_now - _packetRefillUtc).TotalSeconds;
+        if (_elapsed > 0)
+        {
+            _packetTokens = Math.Min(_burstPackets, _packetTokens + _elapsed * _packetsPerSecond);
+            _packetRefillUtc = _now;
+        }
+        if (_packetTokens < 1) return false;
+        _packetTokens -= 1;
+        return true;
+    }
 }
 
 internal sealed class RelayPacket
@@ -828,6 +923,7 @@ internal sealed class RelayPacket
     public ulong PlatformId { get; set; }
     public ulong TargetPlatformId { get; set; }
     public string? ServerId { get; set; }
+    public string? SessionToken { get; set; }
     public string? LevelBarcode { get; set; }
     public string? LoadingScreenBarcode { get; set; }
     public bool IsLoading { get; set; }

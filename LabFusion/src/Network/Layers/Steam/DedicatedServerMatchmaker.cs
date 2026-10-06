@@ -13,6 +13,8 @@ namespace LabFusion.Network;
 
 public sealed class DedicatedServerMatchmaker : IMatchmaker
 {
+    private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
+
     public void RequestLobbies(Action<IMatchmaker.MatchmakerCallbackInfo> callback) => RequestLobbies(MatchmakerFilters.Empty, callback);
 
     public void RequestLobbies(MatchmakerFilters filters, Action<IMatchmaker.MatchmakerCallbackInfo> callback) => MelonCoroutines.Start(QueryHistory(callback));
@@ -43,13 +45,13 @@ public sealed class DedicatedServerMatchmaker : IMatchmaker
         if (!TryParseAddress(address, out var _endpoint)) return null;
         using var _udp = new UdpClient();
         _udp.Client.ReceiveTimeout = 1500;
-        var _request = JsonSerializer.SerializeToUtf8Bytes(new RelayPacket { Type = "Query" });
+        var _request = JsonSerializer.SerializeToUtf8Bytes(new RelayPacket { Type = "Query" }, _jsonOptions);
         try
         {
             _udp.Send(_request, _request.Length, _endpoint);
             var _remote = new IPEndPoint(IPAddress.Any, 0);
             var _response = _udp.Receive(ref _remote);
-            return JsonSerializer.Deserialize<DedicatedServerInfo>(Encoding.UTF8.GetString(_response));
+            return JsonSerializer.Deserialize<DedicatedServerInfo>(Encoding.UTF8.GetString(_response), _jsonOptions);
         }
         catch (Exception _exception)
         {
