@@ -579,4 +579,4 @@ Removed client surface:
 - `ServerPrivacy.FRIENDS_ONLY` (under the relay's self-only `IsFriend` it blocked all joins) and the `ProxyPort` setting.
 - Build surface: `Il2CppFacepunch.Steamworks.Win64` references (LabFusion and BonelabSupport), the vendored `dependencies/Facepunch.Steamworks` source (145 files), the `MelonOptionalDependencies` declaration, and the stale `LabFusion - Backup.csproj`.
 
-RoomCode (`GetServerCode`/`RefreshServerCode`/`JoinServerByCode`) was deliberately kept this round.
+RoomCode (`GetServerCode`/`RefreshServerCode`/`JoinServerByCode`) was deliberately kept in the Steam removal round and then retired in the follow-up menu pass: the relay address is the join key, so the server page now shows the address with a "Copy Address" button, `JoinServerByCode` was renamed to `JoinServerByAddress`, and the random code generation/wiring (`GetServerCode`/`RefreshServerCode` and the Welcome-time generation call) was removed. `RandomCodeGenerator` remains as an unused generic utility.

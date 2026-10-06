@@ -139,7 +139,7 @@ public sealed class DedicatedServerLobby : NetworkLobby
     public override Action CreateJoinDelegate(ulong lobbyId) => () =>
     {
         DedicatedServerHistory.Add(_address);
-        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer) _layer.JoinServerByCode(_address);
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer) _layer.JoinServerByAddress(_address);
     };
 
     public static ulong GetLobbyId(string address)

@@ -164,7 +164,7 @@ public static class MenuMatchmaking
                     return;
                 }
 
-                NetworkHelper.JoinServerByCode(code);
+                NetworkHelper.JoinServerByAddress(code);
             });
     }
 

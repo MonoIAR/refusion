@@ -11,6 +11,7 @@ using LabFusion.Safety;
 using LabFusion.Scene;
 using LabFusion.SDK.Gamemodes;
 using LabFusion.Senders;
+using LabFusion.UI.Popups;
 using LabFusion.Utilities;
 
 using UnityEngine;
@@ -278,19 +279,20 @@ public static class MenuLocation
 
         RefreshPlayerList();
 
-        // Show server code
+        // Show the relay address
         element.CodeElement
             .Cleared()
-            .WithTitle("Code")
+            .WithTitle("Address")
             .WithInteractability(false);
 
-        element.CodeElement.Value = NetworkHelper.GetServerCode();
+        element.CodeElement.Value = NetworkHelper.GetServerAddress();
         element.CodeElement.EmptyFormat = "No {0}";
 
         element.CodeRefreshElement
             .Cleared()
             .WithInteractability(ownsSettings)
-            .Do(NetworkHelper.RefreshServerCode);
+            .WithTitle("Copy Address")
+            .Do(CopyServerAddress);
 
         // Disable unnecessary elements
         element.BansGrid.SetActive(ownsSettings);
@@ -457,19 +459,20 @@ public static class MenuLocation
         // Update player list
         RefreshPlayerList();
 
-        // Show server code
+        // Show the relay address
         element.CodeElement
             .Cleared()
-            .WithTitle("Code")
+            .WithTitle("Address")
             .WithInteractability(false);
 
-        element.CodeElement.Value = NetworkHelper.GetServerCode();
+        element.CodeElement.Value = NetworkHelper.GetServerAddress();
         element.CodeElement.EmptyFormat = "No {0}";
 
         element.CodeRefreshElement
             .Cleared()
             .WithInteractability(ownsSettings)
-            .Do(NetworkHelper.RefreshServerCode);
+            .WithTitle("Copy Address")
+            .Do(CopyServerAddress);
 
         // Disable unnecessary elements
         element.BansGrid.SetActive(ownsSettings);
@@ -480,6 +483,28 @@ public static class MenuLocation
 
         // Change interactability for all elements
         element.Interactable = ownsSettings;
+    }
+
+    private static void CopyServerAddress()
+    {
+        var _address = NetworkHelper.GetServerAddress();
+
+        if (string.IsNullOrWhiteSpace(_address))
+        {
+            return;
+        }
+
+        try { GUIUtility.systemCopyBuffer = _address; }
+        catch (Exception _exception) { FusionLogger.LogException("copying the server address", _exception); }
+
+        Notifier.Send(new Notification()
+        {
+            Title = "Address Copied",
+            Message = _address,
+            SaveToMenu = false,
+            ShowPopup = true,
+            Type = NotificationType.INFORMATION,
+        });
     }
 
     private static void RefreshPlayerList()

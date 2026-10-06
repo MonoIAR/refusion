@@ -26,36 +26,26 @@ public static class NetworkHelper
     }
 
     /// <summary>
-    /// Attempts to join a server given a server code.
+    /// Attempts to join a server given a relay address.
     /// </summary>
-    /// <param name="code"></param>
-    public static void JoinServerByCode(string code)
+    /// <param name="address"></param>
+    public static void JoinServerByAddress(string address)
     {
-        NetworkLayerManager.Layer?.JoinServerByCode(code);
+        NetworkLayerManager.Layer?.JoinServerByAddress(address);
     }
 
     /// <summary>
-    /// Gets the code of the current server.
+    /// Gets the address of the currently connected dedicated server.
     /// </summary>
-    /// <returns>The server code.</returns>
-    public static string GetServerCode()
+    /// <returns>The relay address.</returns>
+    public static string GetServerAddress()
     {
-        var layer = NetworkLayerManager.Layer;
-
-        if (layer == null)
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer)
         {
-            return null;
+            return _layer.GetServerAddress();
         }
 
-        return layer.GetServerCode();
-    }
-
-    /// <summary>
-    /// Generates a new server code.
-    /// </summary>
-    public static void RefreshServerCode()
-    {
-        NetworkLayerManager.Layer.RefreshServerCode();
+        return string.Empty;
     }
 
     /// <summary>

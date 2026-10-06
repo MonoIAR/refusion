@@ -223,15 +223,6 @@ public abstract class NetworkLayer
 
     public virtual void OnUserJoin(PlayerID id) { }
 
-    public virtual string GetServerCode()
-    {
-        return null;
-    }
-
-    public virtual void RefreshServerCode()
-    {
-    }
-
     public virtual void SetServerScene(string levelBarcode, string loadingScreenBarcode)
     {
     }
@@ -244,9 +235,9 @@ public abstract class NetworkLayer
     {
     }
 
-    public virtual void JoinServerByCode(string code)
+    public virtual void JoinServerByAddress(string address)
     {
-        throw new NotImplementedException("The current NetworkLayer does not support joining by code!");
+        throw new NotImplementedException("The current NetworkLayer does not support joining by address!");
     }
 
     public static void RegisterLayersFromAssembly(Assembly targetAssembly)

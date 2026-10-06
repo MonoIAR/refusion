@@ -241,25 +241,16 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         SendRelayPacket(new RelayPacket { Type = "Unban", ClientId = _clientId, PersistentPlayerId = persistentPlayerId });
     }
 
-    public string ServerCode { get; private set; } = null;
-
-    public override string GetServerCode()
+    public string GetServerAddress()
     {
-        return ServerCode;
+        return _relayEndpoint?.ToString() ?? string.Empty;
     }
 
-    public override void RefreshServerCode()
+    public override void JoinServerByAddress(string address)
     {
-        ServerCode = RandomCodeGenerator.GetString(8);
-
-        LobbyInfoManager.PushLobbyUpdate();
-    }
-
-    public override void JoinServerByCode(string code)
-    {
-        if (string.IsNullOrWhiteSpace(code)) return;
-        DedicatedServerHistory.Add(code);
-        JoinDedicatedServer(code);
+        if (string.IsNullOrWhiteSpace(address)) return;
+        DedicatedServerHistory.Add(address);
+        JoinDedicatedServer(address);
     }
 
     protected virtual void JoinDedicatedServer(string address) => JoinDedicatedServerInternal(address);
@@ -269,7 +260,12 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         if (!TryParseAddress(address, out var _endpoint)) { FusionLogger.Error($"Invalid dedicated server address: {address}"); return; }
         if (_isConnectionActive || _isServerActive) Disconnect();
         _relayEndpoint = _endpoint;
-        _udpClient = new UdpClient();
+        _udpClient = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
+        if (OperatingSystem.IsWindows())
+        {
+            // SIO_UDP_CONNRESET: an ICMP port-unreachable must not abort pending receives on Windows.
+            try { _udpClient.Client.IOControl(unchecked((int)0x9800000C), new byte[4], null); } catch { }
+        }
         _receiveSource = new CancellationTokenSource();
         _isConnectionActive = true;
         _lastPingUtc = DateTime.UtcNow;
@@ -284,7 +280,9 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             while (!token.IsCancellationRequested && _udpClient != null)
             {
                 var _result = await _udpClient.ReceiveAsync(token);
-                var _packet = JsonSerializer.Deserialize<RelayPacket>(_result.Buffer, _jsonOptions);
+                RelayPacket _packet;
+                try { _packet = JsonSerializer.Deserialize<RelayPacket>(_result.Buffer, _jsonOptions); }
+                catch (JsonException) { continue; }
                 if (_packet != null) _receivedPackets.Enqueue(_packet);
             }
         }
@@ -317,7 +315,7 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             _relaySmallIds[PlayerIDManager.LocalPlatformID] = _smallId;
             _relayOperators[PlayerIDManager.LocalPlatformID] = packet.IsOperator;
             _relayPersistentIds[PlayerIDManager.LocalPlatformID] = packet.PersistentPlayerId;
-            if (_isServerActive) { InternalServerHelpers.OnStartServer(); RefreshServerCode(); }
+            if (_isServerActive) { InternalServerHelpers.OnStartServer(); }
             else ConnectionSender.SendConnectionRequest();
             return;
         }
