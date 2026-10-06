@@ -31,17 +31,6 @@ public static class MetadataHelper
         username = TextFilter.FilterCommonAndRichText(username);
         nickname = TextFilter.FilterCommon(nickname);
 
-        // Check validity
-        if (TrustedListManager.VerifyPlayer(id.PlatformID, username) == TrustedStatus.Impersonator)
-        {
-            username = $"{username} (FAKE)";
-        }
-
-        if (TrustedListManager.VerifyPlayer(id.PlatformID, nickname) == TrustedStatus.Impersonator)
-        {
-            nickname = $"{nickname} (FAKE)";
-        }
-
         // Convert how the nickname is displayed
         if (!string.IsNullOrWhiteSpace(nickname))
         {

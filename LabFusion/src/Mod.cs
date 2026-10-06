@@ -82,9 +82,6 @@ public class FusionMod : MelonMod
         // Prepare the data path for writing files
         PersistentData.OnPathInitialize();
         RefusionIdentity.OnInitialize();
-        
-        // Load APIs
-        SteamAPILoader.OnLoadSteamAPI();
 
         // Initialize data and hooks
         PDController.OnInitializeMelon();
@@ -199,9 +196,6 @@ public class FusionMod : MelonMod
 
         // Undo game changes
         PlayerAdditionsHelper.OnDeinitializeMelon();
-
-        // Free APIs
-        SteamAPILoader.OnFreeSteamAPI();
     }
 
     public override void OnPreferencesLoaded()

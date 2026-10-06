@@ -13,7 +13,6 @@ public enum ServerPrivacy
 {
     PUBLIC = 0,
     PRIVATE = 1,
-    FRIENDS_ONLY = 2,
     LOCKED = 3,
 }
 
@@ -130,7 +129,7 @@ public abstract class NetworkLayer
     public virtual string GetUsername(ulong userId) => "Unknown";
 
     /// <summary>
-    /// Returns true if this is a friend (ex. steam friends).
+    /// Returns true if this is a friend on the active platform.
     /// </summary>
     /// <param name="userId"></param>
     /// <returns></returns>

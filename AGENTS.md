@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repository.
 
 ## Project Overview
 
-Refusion is a fork of [Lakatrazz/BONELAB-Fusion](https://github.com/Lakatrazz/BONELAB-Fusion) (LabFusion), a multiplayer mod for BONELAB built on MelonLoader. The fork's goal is to replace the Steam-based transport with a dedicated UDP relay server and a dedicated-server network layer.
+Refusion is a fork of [Lakatrazz/BONELAB-Fusion](https://github.com/Lakatrazz/BONELAB-Fusion) (LabFusion), a multiplayer mod for BONELAB built on MelonLoader. The fork replaced the Steam-based transport with a dedicated UDP relay server: the relay client (`DedicatedServerNetworkLayer`) is the only network layer on every platform, and all Steam networking code and dependencies have been removed.
 
 - `origin` = `https://github.com/MonoIAR/refusion.git` (the fork)
 - `upstream` = `https://github.com/Lakatrazz/BONELAB-Fusion.git` (original project)
@@ -23,7 +23,7 @@ Solution file: `LabFusion.sln` (4 projects)
 Other top-level directories:
 
 - `LabFusion/FusionBundles/` — Unity project for AssetBundles/Pallets. Mostly excluded from compilation; only ~27 runtime scripts under `FusionBundles/Assets/FusionMarrow/Runtime/` are explicitly included. Do not reorganize without updating `LabFusion.csproj` includes/excludes.
-- `LabFusion/dependencies/` — vendored source (LiteNetLib, Facepunch.Steamworks, GroovyCodecs) compiled directly into the mod; `steam_api64.dll` is an embedded resource.
+- `LabFusion/dependencies/` — vendored source (LiteNetLib, GroovyCodecs) compiled directly into the mod.
 - `docs/` — project docs. **Read `docs/dedicated-server-network-layer-audit.md` before any networking work**; it defines the architecture direction, identity/permission model, and new code style.
 - `Staging/` — release packaging area (Thunderstore manifest, GitHub release assets).
 - `.github/` — issue templates only. There is no CI.
@@ -49,7 +49,7 @@ There are no post-build copy steps for the main mod — deploying means manually
 
 - **Entry point:** `FusionMod : MelonMod` in `LabFusion/src/Mod.cs`; mod metadata in `LabFusion/src/AssemblyInfo.cs`.
 - **Versioning:** `FusionVersion` in `src/Mod.cs` is the single source of truth; `AssemblyInfo.cs` derives `AssemblyVersion` from it. Change versions only there.
-- **Network layer abstraction:** `src/Network/Layers/NetworkLayer.cs` is the transport contract. `NetworkLayerManager` owns the active layer; `NetworkLayerDeterminer` selects it by saved title and platform (Android gets the Proxy layer). Built-in layers: Steam, Proxy (Steam-based), the new `DedicatedServerNetworkLayer`, and an `EmptyNetworkLayer` fallback. Layers are discovered by reflection via `RegisterLayersFromAssembly()`.
+- **Network layer abstraction:** `src/Network/Layers/NetworkLayer.cs` is the transport contract. `NetworkLayerManager` owns the active layer; `NetworkLayerDeterminer` selects it by saved title. Built-in layers: `DedicatedServerNetworkLayer` (UDP relay client, `src/Network/Layers/DedicatedServer/`, used on all platforms including Quest) and an `EmptyNetworkLayer` fallback. Layers are discovered by reflection via `RegisterLayersFromAssembly()`.
 - **Server lifecycle:** `InternalServerHelpers.OnStartServer()` / `OnDisconnect()` are the canonical hooks; the pseudo-host (first relay client, SmallID=0) must call them on Unity's main thread.
 - **Modules system:** `src/SDK/Modules/Module.cs` + `ModuleManager` — modules are found by reflection and instantiated automatically; no manual registration.
 - **Messages:** routed via `MessagePrefix` (route + channel + sender SmallID); handlers under `src/Network/Messages/`. `NativeMessageHandler` validates sender SmallID against the transport-provided identity — never trust client-supplied identity fields.
@@ -85,7 +85,7 @@ Existing codebase conventions (keep consistent when touching old code):
 
 ## Hard Rules
 
-1. Do not remove Steam references (`Il2CppFacepunch.Steamworks`, vendored Facepunch source) without a full usage audit — see the audit doc's "Build And Steam Dependency Surface".
+1. Do not reintroduce Steam-based networking. The relay is the only transport; client Steam networking code, the Steamworks assembly reference, the vendored Facepunch.Steamworks source, the embedded `steam_api64.dll`, and the Steam-era master/trusted lists were removed deliberately (see the audit doc's Steam Removal notes).
 2. Unity/game object APIs only on the Unity main thread; socket threads must queue work.
 3. Never trust client-provided `PlatformID`, `SmallID`, route, or channel values at the relay boundary.
 4. Read the migration checklist in `docs/dedicated-server-network-layer-audit.md` before changing transport, identity, permissions, or matchmaking code.

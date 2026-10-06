@@ -42,8 +42,6 @@
     <Compile Remove="FusionHelper\Extensions\**" />
     <Compile Remove="FusionHelper\obj\**" />
     <Compile Remove="FusionHelper\Resources\**" />
-    <Compile Remove="FusionHelper\Steamworks.NET\**" />
-    <Compile Remove="FusionHelper\Steamworks\**" />
     <Compile Remove="src\Data\Containers\Levels\**" />
     <Compile Remove="src\Data\Interfaces\**" />
     <EmbeddedResource Remove="FusionBundles\Assets\Achievements\**" />
@@ -71,8 +69,6 @@
     <EmbeddedResource Remove="FusionHelper\Extensions\**" />
     <EmbeddedResource Remove="FusionHelper\obj\**" />
     <EmbeddedResource Remove="FusionHelper\Resources\**" />
-    <EmbeddedResource Remove="FusionHelper\Steamworks.NET\**" />
-    <EmbeddedResource Remove="FusionHelper\Steamworks\**" />
     <EmbeddedResource Remove="src\Data\Containers\Levels\**" />
     <EmbeddedResource Remove="src\Data\Interfaces\**" />
     <None Remove="FusionBundles\Assets\Achievements\**" />
@@ -100,8 +96,6 @@
     <None Remove="FusionHelper\Extensions\**" />
     <None Remove="FusionHelper\obj\**" />
     <None Remove="FusionHelper\Resources\**" />
-    <None Remove="FusionHelper\Steamworks.NET\**" />
-    <None Remove="FusionHelper\Steamworks\**" />
     <None Remove="src\Data\Containers\Levels\**" />
     <None Remove="src\Data\Interfaces\**" />
   </ItemGroup>
@@ -113,7 +107,6 @@
 
   <ItemGroup>
     <None Remove="dependencies\BoneLib.dll" />
-    <None Remove="dependencies\resources\lib\x86_64\steam_api64.dll" />
     <None Remove="dependencies\resources\text\credits\raw_credits_01.txt" />
     <None Remove="dependencies\resources\text\credits\raw_credits_02.txt" />
     <None Remove="dependencies\resources\text\credits\raw_credits_03.txt" />
@@ -260,10 +253,6 @@
     <None Remove="FusionBundles\Assets\UniversalRenderPipelineGlobalSettings.asset.meta" />
     <None Remove="FusionBundles\Assets\XR.meta" />
     <None Remove="FusionBundles\Assets\_MarrowAssets.meta" />
-    <None Remove="FusionHelper\build-mac.sh" />
-    <None Remove="FusionHelper\libsteam_api.dylib" />
-    <None Remove="FusionHelper\libsteam_api.so" />
-    <None Remove="FusionHelper\steam_api64.dll" />
     <None Remove="src\Downloading\ModIO\ModReferences.cs~RF2566c200.TMP" />
     <None Remove="src\Marrow\Audio\AudioReference.cs~RF202ddfa1.TMP" />
     <None Remove="src\Menu\MenuPageHelper.cs~RF7c939358.TMP" />
@@ -302,7 +291,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="dependencies\resources\lib\x86_64\steam_api64.dll" />
     <EmbeddedResource Include="dependencies\resources\text\credits\raw_credits_01.txt" />
     <EmbeddedResource Include="dependencies\resources\text\credits\raw_credits_02.txt" />
     <EmbeddedResource Include="dependencies\resources\text\credits\raw_credits_03.txt" />
@@ -323,9 +311,6 @@
     </Reference>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(BONELAB_DIR)\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath>
-    </Reference>
-    <Reference Include="Il2CppFacepunch.Steamworks.Win64">
-      <HintPath>$(BONELAB_DIR)\MelonLoader\Il2CppAssemblies\Il2CppFacepunch.Steamworks.Win64.dll</HintPath>
     </Reference>
     <Reference Include="Il2Cppmscorlib">
       <HintPath>$(BONELAB_DIR)\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath>

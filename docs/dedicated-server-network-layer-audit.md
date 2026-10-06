@@ -564,3 +564,19 @@ Hardening round applied to `RefusionRelay/Program.cs` and the client layer:
 - Relay stability: the receive loop and shutdown path no longer die on `SocketException` (including the Windows `SIO_UDP_CONNRESET` behavior), console/cleanup tasks contain per-iteration exceptions, and all JSON persistence uses atomic temp-file writes.
 - Console input is read on a background task. Previously `Console.In.ReadLineAsync` blocked inline when stdin was a redirected pipe (service/nohup deployments), which stalled `RunAsync` before the receive loop ever started — the relay accepted no packets at all in that configuration.
 - Deliberately unchanged: the relay's OWNER kick/ban bypass (all moderation packets are emitted by the pseudo-host after its own `FusionPermissions` check; removing the owner branch would break in-game moderation until the admin/vote redesign), stale-session reconnect rejection, and `PersistentPlayerId` in `PlayerJoined` broadcasts (the client uses it for unban).
+
+## Steam Removal (2026-10-06)
+
+Team decision: all Steam networking is removed; the relay is the only transport on every platform, including Quest, which now connects directly to the relay instead of the Steam-based Proxy stack. A full usage audit (source, support module, and build surface) preceded the removal, satisfying the former hard rule from "Build And Steam Dependency Surface".
+
+Removed client surface:
+
+- Steam transport remnants: `SteamSocketManager`, `SteamConnectionManager`, `SteamLobby`, `SteamMatchmaker`, and the dead Steam members of the converted class (`GameHasSteamworks`, `ShutdownGameClient`, `SteamId`, `SteamSocket`/`SteamConnection`, `_localLobby`, `ApplicationID`, `JoinServer(SteamId)`).
+- The entire `Layers/Proxy` stack (8 files) and the Android special case in `NetworkLayerDeterminer`. `DedicatedServerNetworkLayer` is now concrete (absorbed `SteamVRNetworkLayer`, Title "Dedicated Server") and supports every platform; the layer lives in `src/Network/Layers/DedicatedServer/`.
+- `SteamSocketHandler`'s live dispatch entry was kept and renamed to `RelayMessageDispatcher`; its Steam send helpers were deleted.
+- `SteamAPILoader` and the embedded `steam_api64.dll` (the game ships its own copy; a runtime sanity check is recommended).
+- Steam-era master/trusted lists (`TrustedListManager`, `MasterPermissionsManager`) and the "(FAKE)" display-name tagging; relay operators are the only privileged identity source.
+- `ServerPrivacy.FRIENDS_ONLY` (under the relay's self-only `IsFriend` it blocked all joins) and the `ProxyPort` setting.
+- Build surface: `Il2CppFacepunch.Steamworks.Win64` references (LabFusion and BonelabSupport), the vendored `dependencies/Facepunch.Steamworks` source (145 files), the `MelonOptionalDependencies` declaration, and the stale `LabFusion - Backup.csproj`.
+
+RoomCode (`GetServerCode`/`RefreshServerCode`/`JoinServerByCode`) was deliberately kept this round.

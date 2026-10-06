@@ -1,8 +1,6 @@
 ﻿using LabFusion.Data;
 using LabFusion.Player;
 using LabFusion.Senders;
-using LabFusion.UI.Popups;
-using LabFusion.Permissions;
 
 namespace LabFusion.Network;
 
@@ -79,26 +77,6 @@ public static class NetworkHelper
     /// <param name="id"></param>
     public static void KickUser(PlayerID id)
     {
-        // Don't kick master users
-        if (MasterPermissionsManager.IsMaster(id))
-        {
-            if (!id.TryGetDisplayName(out var name))
-                name = "Wacky Willy";
-
-            Notifier.Send(new Notification()
-            {
-                Title = "Failed to Kick User",
-
-                Message = $"{name} has denied your kick request.",
-
-                SaveToMenu = false,
-                ShowPopup = true,
-                Type = NotificationType.ERROR,
-            });
-
-            return;
-        }
-
         if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer)
         {
             _layer.DisconnectUser(id.PlatformID);
@@ -114,26 +92,6 @@ public static class NetworkHelper
     /// <param name="id"></param>
     public static void BanUser(PlayerID id)
     {
-        // Don't ban master users
-        if (MasterPermissionsManager.IsMaster(id))
-        {
-            if (!id.TryGetDisplayName(out var name))
-                name = "Wacky Willy";
-
-            Notifier.Send(new Notification()
-            {
-                Title = "Failed to Ban User",
-
-                Message = $"{name} has denied your ban request.",
-
-                SaveToMenu = false,
-                ShowPopup = true,
-                Type = NotificationType.ERROR,
-            });
-
-            return;
-        }
-
         if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer)
         {
             _layer.BanUser(id.SmallID, "Banned from Server");
@@ -152,10 +110,6 @@ public static class NetworkHelper
     public static bool IsBanned(ulong longID)
     {
         if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer)
-            return false;
-
-        // Check if the user is a master
-        if (MasterPermissionsManager.IsMaster(longID))
             return false;
 
         // Check the ban list

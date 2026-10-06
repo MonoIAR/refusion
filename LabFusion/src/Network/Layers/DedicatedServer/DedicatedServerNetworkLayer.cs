@@ -1,10 +1,7 @@
-﻿using LabFusion.Data;
+using LabFusion.Data;
 using LabFusion.Player;
 using LabFusion.Utilities;
 using LabFusion.UI.Popups;
-
-using Steamworks;
-using Steamworks.Data;
 
 using LabFusion.Senders;
 using LabFusion.Voice;
@@ -21,10 +18,8 @@ using System.Collections.Concurrent;
 
 namespace LabFusion.Network;
 
-public abstract class DedicatedServerNetworkLayer : NetworkLayer
+public class DedicatedServerNetworkLayer : NetworkLayer
 {
-    public abstract uint ApplicationID { get; }
-
     public const int ReceiveBufferSize = 32;
 
     public override string Title => "Dedicated Server";
@@ -42,11 +37,6 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
 
     private IMatchmaker _matchmaker = null;
     public override IMatchmaker Matchmaker => _matchmaker;
-
-    public SteamId SteamId;
-
-    public static SteamSocketManager SteamSocket;
-    public static SteamConnectionManager SteamConnection;
 
     protected bool _isServerActive = false;
     protected bool _isConnectionActive = false;
@@ -70,13 +60,9 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
     private const string _serverVersion = "0.1.0";
     private const int _protocolVersion = 2;
 
-    // A local reference to a lobby
-    // This isn't actually used for joining servers, just for matchmaking
-    protected Lobby _localLobby;
-
     public override bool CheckSupported()
     {
-        return !PlatformHelper.IsAndroid;
+        return true;
     }
 
     public override bool CheckValidation()
@@ -89,7 +75,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
         RefusionIdentity.OnInitialize();
         PlayerIDManager.SetLongID(GetPlatformId());
         LocalPlayer.Username = Environment.UserName;
-        HookSteamEvents();
+        HookEvents();
 
         // Create managers
         _voiceManager = new UnityVoiceManager();
@@ -105,12 +91,11 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
 
         _matchmaker = null;
 
-        _localLobby = default;
         _currentLobby = null;
 
         Disconnect();
 
-        UnHookSteamEvents();
+        UnhookEvents();
     }
 
     public override void LogIn()
@@ -122,30 +107,6 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
     {
         Disconnect();
         InvokeLoggedOutEvent();
-    }
-
-    private const string STEAMWORKS_ASSEMBLY_NAME = "Il2CppFacepunch.Steamworks.Win64";
-
-    private static bool GameHasSteamworks()
-    {
-        var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-
-        foreach (var assembly in assemblies)
-        {
-            if (assembly.FullName.StartsWith(STEAMWORKS_ASSEMBLY_NAME))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static void ShutdownGameClient()
-    {
-        FusionLogger.Log("Shutting down the game's Steamworks instance...");
-
-        Il2CppSteamworks.SteamClient.Shutdown();
     }
 
     public override void OnUpdateLayer()
@@ -228,15 +189,6 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
     public override void StartServer()
     {
         Notifier.Send(new Notification { Title = "Unable to Create Server", Message = "Manual server creation is disabled. Enter a relay address to join a dedicated server.", PopupLength = 5f, ShowPopup = true, Type = NotificationType.ERROR });
-    }
-
-    public void JoinServer(SteamId serverId)
-    {
-        // Leave existing server
-        if (_isConnectionActive || _isServerActive)
-            Disconnect();
-
-        JoinDedicatedServer(serverId.Value.ToString());
     }
 
     public override void Disconnect(string reason = "")
@@ -404,7 +356,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
             if (packet.Type.Equals("ServerMessage", StringComparison.OrdinalIgnoreCase) && packet.PlatformId != 0) _relaySmallIds[packet.PlatformId] = packet.SmallId;
             if (packet.PlatformId != 0) _relayOperators[packet.PlatformId] = packet.IsOperator;
             if (packet.PlatformId != 0 && !string.IsNullOrWhiteSpace(packet.PersistentPlayerId)) _relayPersistentIds[packet.PlatformId] = packet.PersistentPlayerId;
-            SteamSocketHandler.OnSocketMessageReceived(_payload, packet.IsServerHandled, packet.PlatformId);
+            RelayMessageDispatcher.Dispatch(_payload, packet.IsServerHandled, packet.PlatformId);
             return;
         }
         if (packet.Type.Equals("PlayerJoined", StringComparison.OrdinalIgnoreCase))
@@ -560,7 +512,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
         public string RequestId { get; set; } = string.Empty;
     }
 
-    private void HookSteamEvents()
+    private void HookEvents()
     {
         // Add server hooks
         MultiplayerHooking.OnPlayerJoined += OnPlayerJoin;
@@ -602,7 +554,7 @@ public abstract class DedicatedServerNetworkLayer : NetworkLayer
         VoiceManager.ClearManager();
     }
 
-    private void UnHookSteamEvents()
+    private void UnhookEvents()
     {
         // Remove server hooks
         MultiplayerHooking.OnPlayerJoined -= OnPlayerJoin;

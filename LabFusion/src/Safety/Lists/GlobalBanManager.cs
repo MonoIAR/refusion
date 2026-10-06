@@ -110,13 +110,6 @@ public static class GlobalBanManager
 
     public static bool IsBanned(LobbyInfo lobby)
     {
-        // Always show friends only lobbies
-        // Banned users can still host and access them
-        if (lobby.Privacy == ServerPrivacy.FRIENDS_ONLY)
-        {
-            return false;
-        }
-
         // Check if the host is banned
         var lobbyPlatformInfo = new PlatformInfo(lobby.LobbyID);
 

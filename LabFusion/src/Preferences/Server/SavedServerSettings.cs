@@ -50,6 +50,7 @@ public static class SavedServerSettings
         VoiceChat = new FusionPref<bool>(category, "Server Voicechat Enabled", true, updateMode);
         PlayerConstraining = new FusionPref<bool>(category, "Server Player Constraints Enabled", false, updateMode);
         Privacy = new FusionPref<ServerPrivacy>(category, "Server Privacy", ServerPrivacy.PUBLIC, updateMode);
+        if (!Enum.IsDefined(Privacy.Value)) Privacy.Value = ServerPrivacy.PUBLIC;
         SlowMoMode = new FusionPref<TimeScaleMode>(category, "Time Scale Mode", TimeScaleMode.LOW_GRAVITY, updateMode);
         MaxPlayers = new FusionPref<int>(category, "Max Players", 10, updateMode);
 

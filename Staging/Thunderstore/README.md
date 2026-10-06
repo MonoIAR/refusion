@@ -26,8 +26,7 @@ The entire campaign has been ensured completable, with nearly every custom event
 - Meta Quest
 
 ## Crossplay Support
-All platforms are able to crossplay together. In order to do so, you must log in to the same Networking Layer upon opening the menu.<br>
-Note that the Meta Quest platform has "Proxy" versions of the PCVR layers, but they will connect to each other just fine.
+All platforms are able to crossplay together. Every platform connects directly to the same dedicated relay server by entering its address upon opening the menu.
 
 # Additional Content
 ## Modules, Gamemodes, and the Bitmart
@@ -54,7 +53,6 @@ You can view the most recent changes and credits in the in game info box in Void
 
 ## Source
 - Fusion: https://github.com/Lakatrazz/BONELAB-Fusion
-- Fusion Helper: https://github.com/Lakatrazz/Fusion-Helper
 
 ## Soundtrack
 You can listen to the Fusion official soundtrack here:

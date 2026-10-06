@@ -12,7 +12,6 @@ public static class ClientSettings
 {
     // Selected network layer
     public static FusionPref<string> NetworkLayerTitle { get; internal set; }
-    public static FusionPref<int> ProxyPort { get; internal set; }
 
     // Menu settings
     public static FusionPref<float> MenuSize { get; internal set; }
@@ -43,7 +42,6 @@ public static class ClientSettings
     {
         // Client settings
         NetworkLayerTitle = new FusionPref<string>(category, "Network Layer Title", NetworkLayerDeterminer.GetDefaultLayer().Title, PrefUpdateMode.IGNORE);
-        ProxyPort = new FusionPref<int>(category, "Proxy Port", 28340, PrefUpdateMode.IGNORE);
 
         // Menu
         MenuSize = new FusionPref<float>(category, "Menu Size", 1f, PrefUpdateMode.IGNORE);

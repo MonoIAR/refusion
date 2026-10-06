@@ -52,7 +52,6 @@ public static class NetworkVerification
         return privacy switch
         {
             ServerPrivacy.PUBLIC or ServerPrivacy.PRIVATE => true,
-            ServerPrivacy.FRIENDS_ONLY => NetworkHelper.IsFriend(platformID),
             _ => false,
         };
     }
