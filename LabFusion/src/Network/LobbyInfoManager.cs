@@ -3,6 +3,7 @@ using LabFusion.Network.Serialization;
 using LabFusion.Preferences.Server;
 using LabFusion.SDK.Gamemodes;
 using LabFusion.Utilities;
+using System.Text.Json;
 
 namespace LabFusion.Network;
 
@@ -71,6 +72,7 @@ public static class LobbyInfoManager
         if (NetworkInfo.IsHost)
         {
             SendLobbyInfo();
+            if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer) _layer.SetServerSettings(JsonSerializer.Serialize(info));
         }
     }
 

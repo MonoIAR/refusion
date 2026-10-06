@@ -71,10 +71,18 @@ public class ConnectionRequestMessage : NativeMessageHandler
 
         ulong platformID = received.PlatformID ?? data.BackupPlatformID;
 
-        var newSmallId = PlayerIDManager.GetUniquePlayerID();
+        byte? newSmallId = null;
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer && received.PlatformID.HasValue && DedicatedServerNetworkLayer.TryGetRelaySmallId(received.PlatformID.Value, out var _relaySmallId))
+        {
+            newSmallId = _relaySmallId;
+        }
+        else if (NetworkLayerManager.Layer is not DedicatedServerNetworkLayer)
+        {
+            newSmallId = PlayerIDManager.GetUniquePlayerID();
+        }
 
         // No unused ids available
-        if (!newSmallId.HasValue)
+        if (!newSmallId.HasValue || PlayerIDManager.IsSmallIDReserved(newSmallId.Value))
         {
             ConnectionSender.SendConnectionDeny(platformID, "Server ran out of space! Wait for someone to leave.");
             return;
@@ -104,7 +112,7 @@ public class ConnectionRequestMessage : NativeMessageHandler
         // Make sure we aren't loading
         if (FusionSceneManager.IsLoading())
         {
-            ConnectionSender.SendConnectionDeny(platformID, "Host is loading.");
+            ConnectionSender.SendConnectionDeny(platformID, "The server is loading a level. Please try again later.");
             return;
         }
 
@@ -146,15 +154,6 @@ public class ConnectionRequestMessage : NativeMessageHandler
         if (NetworkHelper.IsBanned(platformID))
         {
             ConnectionSender.SendConnectionDeny(platformID, "Banned from Server");
-            return;
-        }
-
-        // Check for global banning
-        var globalBanInfo = GlobalBanManager.GetBanInfo(new PlatformInfo(platformID));
-
-        if (globalBanInfo != null && SavedServerSettings.Privacy.Value != ServerPrivacy.FRIENDS_ONLY)
-        {
-            ConnectionSender.SendConnectionDeny(platformID, globalBanInfo.Reason);
             return;
         }
 

@@ -32,11 +32,11 @@ public class SteamLobby : NetworkLobby
 
     public override Action CreateJoinDelegate(ulong lobbyId)
     {
-        if (NetworkLayerManager.Layer is SteamNetworkLayer steamLayer)
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer dedicatedServerLayer)
         {
             return () =>
             {
-                steamLayer.JoinServer(lobbyId);
+                dedicatedServerLayer.JoinServer(lobbyId);
             };
         }
 

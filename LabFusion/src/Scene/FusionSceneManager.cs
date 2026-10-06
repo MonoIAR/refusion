@@ -59,6 +59,7 @@ public static partial class FusionSceneManager
             {
                 LoadSender.SendLoadingState(true);
                 LocalPlayer.Metadata.LevelBarcode.SetValue(Barcode);
+                NetworkLayerManager.Layer?.SetServerLoading(true);
 
                 // Send level load
                 if (NetworkInfo.IsHost)
@@ -78,6 +79,11 @@ public static partial class FusionSceneManager
 
             LoadSender.SendLoadingState(!HasTargetLoaded());
             LocalPlayer.Metadata.LevelBarcode.SetValue(Barcode);
+            if (NetworkInfo.IsHost)
+            {
+                NetworkLayerManager.Layer?.SetServerScene(Barcode, LoadBarcode);
+                NetworkLayerManager.Layer?.SetServerLoading(false);
+            }
 
             // Invoke the level load hook
             _onLevelLoad?.InvokeSafe("executing OnLevelLoad hook");

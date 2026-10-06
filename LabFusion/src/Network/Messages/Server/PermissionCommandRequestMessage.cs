@@ -61,7 +61,7 @@ public class PermissionCommandRequestMessage : NativeMessageHandler
             case PermissionCommandType.UNKNOWN:
                 break;
             case PermissionCommandType.KICK:
-                if (otherPlayer.IsHost)
+                if (otherPlayer == null || otherPlayer.IsHost)
                 {
                     return;
                 }
@@ -72,7 +72,7 @@ public class PermissionCommandRequestMessage : NativeMessageHandler
                 }
                 break;
             case PermissionCommandType.BAN:
-                if (otherPlayer.IsHost)
+                if (otherPlayer == null || otherPlayer.IsHost)
                 {
                     return;
                 }

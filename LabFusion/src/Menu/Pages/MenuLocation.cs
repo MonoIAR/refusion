@@ -86,7 +86,7 @@ public static class MenuLocation
     {
         element.ServerActionElement
             .Cleared()
-            .WithTitle("Disconnect")
+            .WithTitle("Leave Server")
             .Do(() => { NetworkHelper.Disconnect(); });
 
         UpdateLobbyIcons(element);
@@ -528,6 +528,13 @@ public static class MenuLocation
         element.BansElement.Clear();
 
         var banListPage = element.BansElement.AddPage();
+
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer)
+        {
+            banListPage.AddElement<LabelElement>("Bans")
+                .WithTitle("Ban list is managed by the dedicated server relay.");
+            return;
+        }
 
         BanManager.ReadFile();
 

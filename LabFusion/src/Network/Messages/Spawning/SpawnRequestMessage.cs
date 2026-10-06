@@ -21,7 +21,7 @@ public class SpawnRequestMessage : NativeMessageHandler
         var data = received.ReadData<SerializedSpawnData>();
 
         // Check for spawnable blacklist
-        if (ModBlacklist.IsBlacklisted(data.Barcode) || GlobalModBlacklistManager.IsBarcodeBlacklisted(data.Barcode))
+        if (RefusionServerPolicy.LegacyHostModBlacklistEnabled && (ModBlacklist.IsBlacklisted(data.Barcode) || GlobalModBlacklistManager.IsBarcodeBlacklisted(data.Barcode)))
         {
 #if DEBUG
             FusionLogger.Warn($"Blocking server spawn of spawnable {data.Barcode} because it is blacklisted!");

@@ -55,6 +55,10 @@ public static class FusionPermissions
             {
                 level = PermissionLevel.OWNER;
             }
+            else if (DedicatedServerNetworkLayer.IsRelayOperator(longId))
+            {
+                level = PermissionLevel.OPERATOR;
+            }
             else
             {
                 foreach (var tuple in PermissionList.PermittedUsers)

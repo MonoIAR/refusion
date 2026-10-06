@@ -58,11 +58,6 @@ public static class LobbyFilterManager
 
     public static bool CheckPersistentFilters(INetworkLobby lobby, LobbyMetadataInfo info)
     {
-        if (GlobalBanManager.IsBanned(info.LobbyInfo))
-        {
-            return false;
-        }
-
         return true;
     }
 

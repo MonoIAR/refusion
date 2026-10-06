@@ -3,6 +3,7 @@ using LabFusion.Network;
 using LabFusion.Player;
 using LabFusion.Scene;
 using LabFusion.Utilities;
+using LabFusion.UI.Popups;
 
 using UnityEngine;
 
@@ -19,6 +20,11 @@ public static class GamemodeHelper
     /// <param name="gamemode">The Gamemode to select upon starting the server.</param>
     public static void StartGamemodeServer(Gamemode gamemode)
     {
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer)
+        {
+            Notifier.Send(new Notification { Title = "Unable to Create Server", Message = "Manual server creation is disabled. Enter a relay address to join a dedicated server.", PopupLength = 5f, ShowPopup = true, Type = NotificationType.ERROR });
+            return;
+        }
         if (NetworkInfo.HasServer)
         {
             NetworkHelper.Disconnect();

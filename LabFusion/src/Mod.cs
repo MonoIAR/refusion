@@ -40,16 +40,16 @@ public struct FusionVersion
 {
 #if DEBUG
     public const byte VersionMajor = 0;
-    public const byte VersionMinor = 0;
+    public const byte VersionMinor = 1;
     public const short VersionPatch = 0;
 
-    public const string VersionString = "0.0.0";
+    public const string VersionString = "0.1.0";
 #else
-    public const byte VersionMajor = 1;
-    public const byte VersionMinor = 14;
-    public const short VersionPatch = 1;
+    public const byte VersionMajor = 0;
+    public const byte VersionMinor = 1;
+    public const short VersionPatch = 0;
 
-    public const string VersionString = "1.14.1";
+    public const string VersionString = "0.1.0";
 #endif
 }
 
@@ -81,6 +81,7 @@ public class FusionMod : MelonMod
 
         // Prepare the data path for writing files
         PersistentData.OnPathInitialize();
+        RefusionIdentity.OnInitialize();
         
         // Load APIs
         SteamAPILoader.OnLoadSteamAPI();

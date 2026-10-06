@@ -58,7 +58,7 @@ public static class SteamSocketHandler
             unsafe
             {
                 IntPtr messagePtr = (IntPtr)message.Buffer;
-                Connection connection = SteamNetworkLayer.SteamConnection.Connection;
+                Connection connection = DedicatedServerNetworkLayer.SteamConnection.Connection;
 
                 Result success = connection.SendMessage(messagePtr, sizeOfMessage, sendType);
                 if (success != Result.OK)
@@ -100,6 +100,18 @@ public static class SteamSocketHandler
         catch (Exception e)
         {
             FusionLogger.Error($"Failed reading message from socket server with reason: {e.Message}\nTrace:{e.StackTrace}");
+        }
+    }
+
+    public static void OnSocketMessageReceived(byte[] messageBytes, bool isServerHandled = false, ulong? platformID = null)
+    {
+        if (messageBytes == null || messageBytes.Length == 0) return;
+        unsafe
+        {
+            fixed (byte* _messagePtr = messageBytes)
+            {
+                OnSocketMessageReceived((IntPtr)_messagePtr, messageBytes.Length, isServerHandled, platformID);
+            }
         }
     }
 }

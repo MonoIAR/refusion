@@ -130,7 +130,7 @@ public static class MenuMatchmaking
             MatchmakingPage.SelectSubPage(3);
         });
 
-        CodeOptionElement.transform.Find("label_Title").GetComponent<LabelElement>().Title = "Enter Code";
+        CodeOptionElement.transform.Find("label_Title").GetComponent<LabelElement>().Title = "Enter Address";
     }
 
     private static void PopulateCode(Transform codeTransform)
@@ -138,7 +138,7 @@ public static class MenuMatchmaking
         var grid = codeTransform.Find("grid_Buttons");
 
         CodeElement = grid.Find("button_Code").GetComponent<StringElement>();
-        CodeElement.Title = "Code";
+        CodeElement.Title = "Address";
         CodeElement.EmptyFormat = "Enter {0}";
 
         CodeElement.OnKeyboardToggled += (v) =>

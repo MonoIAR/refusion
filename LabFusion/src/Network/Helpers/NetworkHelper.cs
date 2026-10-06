@@ -99,6 +99,12 @@ public static class NetworkHelper
             return;
         }
 
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer)
+        {
+            _layer.DisconnectUser(id.PlatformID);
+            return;
+        }
+
         ConnectionSender.SendDisconnect(id, "Kicked from Server");
     }
 
@@ -128,6 +134,12 @@ public static class NetworkHelper
             return;
         }
 
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer)
+        {
+            _layer.BanUser(id.SmallID, "Banned from Server");
+            return;
+        }
+
         BanManager.Ban(new PlayerInfo(id), "Banned");
         ConnectionSender.SendDisconnect(id, "Banned from Server");
     }
@@ -139,6 +151,9 @@ public static class NetworkHelper
     /// <returns></returns>
     public static bool IsBanned(ulong longID)
     {
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer)
+            return false;
+
         // Check if the user is a master
         if (MasterPermissionsManager.IsMaster(longID))
             return false;
@@ -161,6 +176,11 @@ public static class NetworkHelper
     /// <param name="longId"></param>
     public static void PardonUser(ulong longId)
     {
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer)
+        {
+            if (DedicatedServerNetworkLayer.TryGetRelayPersistentId(longId, out var _persistentPlayerId)) _layer.UnbanUser(_persistentPlayerId);
+            return;
+        }
         BanManager.Pardon(longId);
     }
 }

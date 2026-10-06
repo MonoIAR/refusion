@@ -56,7 +56,7 @@ public static class TrustedListManager
 
     public static TrustedStatus VerifyPlayer(ulong id, string name)
     {
-        if (NetworkLayerManager.Layer is SteamNetworkLayer)
+        if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer)
         {
             return VerifyPlayer(_steamPlayers, id, name);
         }

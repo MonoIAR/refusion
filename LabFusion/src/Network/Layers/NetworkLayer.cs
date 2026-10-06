@@ -233,6 +233,18 @@ public abstract class NetworkLayer
     {
     }
 
+    public virtual void SetServerScene(string levelBarcode, string loadingScreenBarcode)
+    {
+    }
+
+    public virtual void SetServerLoading(bool isLoading)
+    {
+    }
+
+    public virtual void SetServerSettings(string settingsJson)
+    {
+    }
+
     public virtual void JoinServerByCode(string code)
     {
         throw new NotImplementedException("The current NetworkLayer does not support joining by code!");
