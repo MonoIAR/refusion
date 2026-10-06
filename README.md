@@ -1,4 +1,13 @@
-# BONELAB Fusion Release
+# Refusion 
+by MIAR STAFF
+
+> [!TIP]
+> Many parts of this project are AI-generated.
+> Please DO NOT use or criticize it if you hate AI.
+
+
+
+# Original README.
 A multiplayer mod for BONELAB featuring support for all platforms.
 
 ![](https://i.imgur.com/1ZpMfei.png)

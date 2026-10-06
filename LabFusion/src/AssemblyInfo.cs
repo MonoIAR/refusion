@@ -1,8 +1,11 @@
-﻿using System.Reflection;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 
 using MelonLoader;
 
 using LabFusion;
+
+[assembly: InternalsVisibleTo("BonelabSupport")]
 
 [assembly: AssemblyTitle(FusionMod.ModName)]
 [assembly: AssemblyVersion(FusionVersion.VersionString)]

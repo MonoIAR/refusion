@@ -360,3 +360,6 @@ Staging/Thunderstore/Plugins
 
 # Auto Generated
 LabFusion/FusionBundles/Assets/AddressableAssetsData
+
+# IDE files
+.vscode/
