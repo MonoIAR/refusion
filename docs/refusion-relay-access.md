@@ -4,6 +4,8 @@ The relay stores persistent access data in `refusion-server-access.json` next to
 
 Older builds stored these files in the process working directory. Move any existing files next to the executable after upgrading, otherwise bans and operators appear to be lost.
 
+The relay listens on UDP port 28430 by default. Set `"port"` in `refusion-server-settings.json` (1-65535) to change it; a port passed as the first command-line argument overrides the file. The port is read once at startup.
+
 ```json
 {
   "operators": [

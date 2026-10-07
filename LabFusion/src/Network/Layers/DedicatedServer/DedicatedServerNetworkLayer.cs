@@ -43,6 +43,9 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     public bool RelayOperator => _isRelayOperator;
     private UdpClient _udpClient;
     private IPEndPoint _relayEndpoint;
+    private string _serverAddress = string.Empty;
+    private readonly ConcurrentQueue<Action> _mainThreadActions = new();
+    private int _joinAttempt;
     private CancellationTokenSource _receiveSource;
     private int _clientId;
     private byte _smallId;
@@ -111,6 +114,11 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
     public override void OnUpdateLayer()
     {
+        while (_mainThreadActions.TryDequeue(out var _action))
+        {
+            try { _action(); }
+            catch (Exception _exception) { FusionLogger.LogException("executing a queued relay action", _exception); }
+        }
         if (_udpClient == null || !_isConnectionActive) return;
         while (_receivedPackets.TryDequeue(out var _packet)) HandleRelayPacket(_packet);
         while (_serverCommands.TryDequeue(out var _command)) ExecuteServerCommand(_command);
@@ -193,6 +201,8 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
     public override void Disconnect(string reason = "")
     {
+        _joinAttempt++;
+
         // Make sure we are currently in a server
         if (!_isServerActive && !_isConnectionActive)
             return;
@@ -215,6 +225,7 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         _clientId = 0;
         _smallId = 0;
         _sessionToken = string.Empty;
+        _serverAddress = string.Empty;
         _relaySmallIds.Clear();
         _relayOperators.Clear();
         _relayPersistentIds.Clear();
@@ -243,7 +254,7 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
     public string GetServerAddress()
     {
-        return _relayEndpoint?.ToString() ?? string.Empty;
+        return _serverAddress;
     }
 
     public override void JoinServerByAddress(string address)
@@ -257,9 +268,51 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
     protected void JoinDedicatedServerInternal(string address)
     {
-        if (!TryParseAddress(address, out var _endpoint)) { FusionLogger.Error($"Invalid dedicated server address: {address}"); return; }
+        var _attempt = ++_joinAttempt;
+
+        if (!TryParseAddress(address, out var _host, out var _port))
+        {
+            FusionLogger.Error($"Invalid dedicated server address: {address}");
+            Notifier.Send(new Notification { Title = "Invalid Server Address", Message = $"\"{address}\" is not a valid address. Enter an IP or hostname with a port, e.g. 127.0.0.1:28430.", PopupLength = 5f, ShowPopup = true, Type = NotificationType.ERROR });
+            return;
+        }
+
+        if (IPAddress.TryParse(_host, out var _ip))
+        {
+            ConnectToRelay(address, new IPEndPoint(_ip, _port));
+            return;
+        }
+
+        Task.Run(async () =>
+        {
+            IPAddress _resolved = null;
+            try
+            {
+                var _addresses = await Dns.GetHostAddressesAsync(_host);
+                _resolved = _addresses.FirstOrDefault(_entry => _entry.AddressFamily == AddressFamily.InterNetwork) ?? _addresses.FirstOrDefault();
+            }
+            catch (Exception _exception) { FusionLogger.Warn($"Could not resolve relay host {_host}: {_exception.Message}"); }
+
+            _mainThreadActions.Enqueue(() =>
+            {
+                if (_attempt != _joinAttempt) return;
+
+                if (_resolved == null)
+                {
+                    Notifier.Send(new Notification { Title = "Failed to Resolve Address", Message = $"Could not resolve \"{_host}\".", PopupLength = 5f, ShowPopup = true, Type = NotificationType.ERROR });
+                    return;
+                }
+
+                ConnectToRelay(address, new IPEndPoint(_resolved, _port));
+            });
+        });
+    }
+
+    private void ConnectToRelay(string address, IPEndPoint endpoint)
+    {
         if (_isConnectionActive || _isServerActive) Disconnect();
-        _relayEndpoint = _endpoint;
+        _serverAddress = address;
+        _relayEndpoint = endpoint;
         _udpClient = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
         if (OperatingSystem.IsWindows())
         {
@@ -463,11 +516,33 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         catch { bytes = Array.Empty<byte>(); return false; }
     }
 
-    private static bool TryParseAddress(string address, out IPEndPoint endpoint)
+    private static bool TryParseAddress(string address, out string host, out int port)
     {
-        endpoint = null;
+        host = null;
+        port = 0;
         var _parts = address.Split(':', 2, StringSplitOptions.TrimEntries);
-        return _parts.Length == 2 && IPAddress.TryParse(_parts[0], out var _ip) && int.TryParse(_parts[1], out var _port) && _port is > 0 and <= 65535 && (endpoint = new IPEndPoint(_ip, _port)) != null;
+        if (_parts.Length != 2 || string.IsNullOrWhiteSpace(_parts[0])) return false;
+        if (!int.TryParse(_parts[1], out port) || port is < 1 or > 65535) return false;
+        var _hostText = _parts[0];
+        if (IPAddress.TryParse(_hostText, out var _ip))
+        {
+            if (!string.Equals(_ip.ToString(), _hostText, StringComparison.Ordinal)) return false;
+        }
+        else if (Uri.CheckHostName(_hostText) == UriHostNameType.Unknown || !HasLetter(_hostText))
+        {
+            return false;
+        }
+        host = _hostText;
+        return true;
+    }
+
+    private static bool HasLetter(string text)
+    {
+        foreach (var _character in text)
+        {
+            if (char.IsLetter(_character)) return true;
+        }
+        return false;
     }
 
     private static ulong GetPlatformId()

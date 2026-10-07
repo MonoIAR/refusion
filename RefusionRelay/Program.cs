@@ -12,7 +12,7 @@ internal static class Program
 {
     private static async Task Main(string[] args)
     {
-        var _port = GetPort(args);
+        var _port = RelayServer.ResolvePort(args);
         RelayServer _server;
         try { _server = new RelayServer(_port); }
         catch (SocketException _exception)
@@ -28,26 +28,21 @@ internal static class Program
         };
         await _server.RunAsync();
     }
-
-    private static int GetPort(string[] args)
-    {
-        if (args.Length == 0 || !int.TryParse(args[0], out var _port) || _port is < 1 or > 65535) return 28430;
-        return _port;
-    }
 }
 
 internal sealed class RelayServer
 {
     private const string _serverVersion = "0.1.0";
     private const int _protocolVersion = 2;
+    private const string _settingsFileName = "refusion-server-settings.json";
     private static readonly TimeSpan _clientTimeout = TimeSpan.FromSeconds(15);
+    private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
     private readonly string _logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
     private readonly string _stateFilePath = Path.Combine(AppContext.BaseDirectory, "refusion-server-state.json");
-    private readonly string _settingsFilePath = Path.Combine(AppContext.BaseDirectory, "refusion-server-settings.json");
+    private readonly string _settingsFilePath = Path.Combine(AppContext.BaseDirectory, _settingsFileName);
     private readonly string _accessFilePath = Path.Combine(AppContext.BaseDirectory, "refusion-server-access.json");
     private readonly UdpClient _socket;
     private readonly ConcurrentDictionary<int, RelayClient> _clients = new();
-    private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
     private readonly object _gate = new();
     private readonly object _logGate = new();
     private readonly ConcurrentDictionary<string, DateTime> _logLimits = new();
@@ -63,6 +58,25 @@ internal sealed class RelayServer
     private string _settingsJson = string.Empty;
     private string _motd = string.Empty;
     private bool _isLoading;
+
+    public static int ResolvePort(string[] args)
+    {
+        if (args.Length > 0 && int.TryParse(args[0], out var _argPort) && _argPort is >= 1 and <= 65535) return _argPort;
+        try
+        {
+            var _path = Path.Combine(AppContext.BaseDirectory, _settingsFileName);
+            if (File.Exists(_path) && JsonSerializer.Deserialize<RelaySettings>(File.ReadAllBytes(_path), _jsonOptions) is { } _settings)
+            {
+                if (_settings.Port is >= 1 and <= 65535) return _settings.Port;
+                Console.Error.WriteLine($"Invalid port {_settings.Port} in {_settingsFileName}; listening on {RelaySettings.DefaultPort}.");
+            }
+        }
+        catch (Exception _exception)
+        {
+            Console.Error.WriteLine($"Could not read {_settingsFileName}: {_exception.Message}; listening on {RelaySettings.DefaultPort}.");
+        }
+        return RelaySettings.DefaultPort;
+    }
 
     public RelayServer(int port)
     {
@@ -958,7 +972,9 @@ internal sealed class RelayState
 
 internal sealed class RelaySettings
 {
+    public const int DefaultPort = 28430;
     public bool AnticheatEnabled { get; set; }
+    public int Port { get; set; } = DefaultPort;
     public int MaxPlayers { get; set; } = 255;
     public string? ServerName { get; set; }
     public string? HostName { get; set; }

@@ -64,9 +64,33 @@ public sealed class DedicatedServerMatchmaker : IMatchmaker
     {
         endpoint = null;
         var _parts = address.Split(':', 2, StringSplitOptions.TrimEntries);
-        if (_parts.Length != 2 || !IPAddress.TryParse(_parts[0], out var _ip) || !int.TryParse(_parts[1], out var _port) || _port is < 1 or > 65535) return false;
-        endpoint = new IPEndPoint(_ip, _port);
-        return true;
+        if (_parts.Length != 2 || string.IsNullOrWhiteSpace(_parts[0]) || !int.TryParse(_parts[1], out var _port) || _port is < 1 or > 65535) return false;
+        var _hostText = _parts[0];
+        if (IPAddress.TryParse(_hostText, out var _ip))
+        {
+            if (!string.Equals(_ip.ToString(), _hostText, StringComparison.Ordinal)) return false;
+            endpoint = new IPEndPoint(_ip, _port);
+            return true;
+        }
+        if (Uri.CheckHostName(_hostText) == UriHostNameType.Unknown || !HasLetter(_hostText)) return false;
+        try
+        {
+            var _addresses = Dns.GetHostAddresses(_hostText);
+            var _resolved = _addresses.FirstOrDefault(_entry => _entry.AddressFamily == AddressFamily.InterNetwork) ?? _addresses.FirstOrDefault();
+            if (_resolved == null) return false;
+            endpoint = new IPEndPoint(_resolved, _port);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static bool HasLetter(string text)
+    {
+        foreach (var _character in text)
+        {
+            if (char.IsLetter(_character)) return true;
+        }
+        return false;
     }
 
     private static IMatchmaker.LobbyInfo CreateLobby(string address, DedicatedServerInfo info)

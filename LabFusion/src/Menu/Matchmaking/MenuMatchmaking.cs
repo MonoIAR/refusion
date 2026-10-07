@@ -147,7 +147,7 @@ public static class MenuMatchmaking
             {
                 var keyboard = MenuCreator.MenuPopups.Keyboard;
                 keyboard.TemporaryUppercase = false;
-                keyboard.Uppercase = true;
+                keyboard.Uppercase = false;
             }
         };
 
