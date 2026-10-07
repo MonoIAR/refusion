@@ -11,7 +11,6 @@ using LabFusion.SDK.Gamemodes;
 using Il2CppSLZ.Marrow.Warehouse;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
 using System.Collections.Concurrent;
@@ -20,8 +19,6 @@ namespace LabFusion.Network;
 
 public class DedicatedServerNetworkLayer : NetworkLayer
 {
-    public const int ReceiveBufferSize = 32;
-
     public override string Title => "Dedicated Server";
 
     public override string Platform => "DedicatedServer";
@@ -53,6 +50,8 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     private bool _isRelayOperator;
     private string _sessionToken = string.Empty;
     private DateTime _lastPingUtc;
+    private DateTime _joinDeadlineUtc = DateTime.MinValue;
+    private DateTime _lastOverflowWarnUtc = DateTime.MinValue;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentQueue<RelayPacket> _receivedPackets = new();
     private readonly ConcurrentQueue<RelayPacket> _serverCommands = new();
@@ -62,6 +61,9 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
     private const string _serverVersion = "0.1.0";
     private const int _protocolVersion = 2;
+    private const int _receivedPacketLimit = 1024;
+    private const int _receivedPacketDrainBudget = 256;
+    private static readonly TimeSpan _joinTimeout = TimeSpan.FromSeconds(10);
 
     public override bool CheckSupported()
     {
@@ -120,7 +122,12 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             catch (Exception _exception) { FusionLogger.LogException("executing a queued relay action", _exception); }
         }
         if (_udpClient == null || !_isConnectionActive) return;
-        while (_receivedPackets.TryDequeue(out var _packet)) HandleRelayPacket(_packet);
+        if (_clientId == 0 && DateTime.UtcNow > _joinDeadlineUtc)
+        {
+            Disconnect("The server did not respond.");
+            return;
+        }
+        for (var _i = 0; _i < _receivedPacketDrainBudget && _receivedPackets.TryDequeue(out var _packet); _i++) HandleRelayPacket(_packet);
         while (_serverCommands.TryDequeue(out var _command)) ExecuteServerCommand(_command);
         if (DateTime.UtcNow - _lastPingUtc > TimeSpan.FromSeconds(5))
         {
@@ -191,7 +198,17 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
         // Get the connection from the userid dictionary
         var _target = PlayerIDManager.GetPlayerID(userId);
-        if (_target != null) SendRelayPacket(CreateForwardPacket("ServerTarget", channel, message, _target.SmallID));
+        if (_target != null)
+        {
+            SendRelayPacket(CreateForwardPacket("ServerTarget", channel, message, _target.SmallID));
+            return;
+        }
+
+        // A player that just sent a connection request has no PlayerID inserted on the host yet, so resolve through the relay identity map
+        if (TryGetRelaySmallId(userId, out var _relaySmallId))
+        {
+            SendRelayPacket(CreateForwardPacket("ServerTarget", channel, message, _relaySmallId));
+        }
     }
 
     public override void StartServer()
@@ -288,8 +305,17 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             IPAddress _resolved = null;
             try
             {
-                var _addresses = await Dns.GetHostAddressesAsync(_host);
-                _resolved = _addresses.FirstOrDefault(_entry => _entry.AddressFamily == AddressFamily.InterNetwork) ?? _addresses.FirstOrDefault();
+                var _resolveTask = Dns.GetHostAddressesAsync(_host);
+                var _completedTask = await Task.WhenAny(_resolveTask, Task.Delay(_joinTimeout));
+                if (_completedTask == _resolveTask)
+                {
+                    var _addresses = await _resolveTask;
+                    _resolved = _addresses.FirstOrDefault(_entry => _entry.AddressFamily == AddressFamily.InterNetwork) ?? _addresses.FirstOrDefault();
+                }
+                else
+                {
+                    FusionLogger.Warn($"Resolving relay host {_host} timed out.");
+                }
             }
             catch (Exception _exception) { FusionLogger.Warn($"Could not resolve relay host {_host}: {_exception.Message}"); }
 
@@ -322,6 +348,7 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         _receiveSource = new CancellationTokenSource();
         _isConnectionActive = true;
         _lastPingUtc = DateTime.UtcNow;
+        _joinDeadlineUtc = DateTime.UtcNow + _joinTimeout;
         _ = ReceiveRelayPacketsAsync(_receiveSource.Token);
         SendRelayPacket(new RelayPacket { Type = "Hello", ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion, PersistentPlayerId = RefusionIdentity.PlayerId, PlatformId = PlayerIDManager.LocalPlatformID, Name = LocalPlayer.Username });
     }
@@ -336,7 +363,17 @@ public class DedicatedServerNetworkLayer : NetworkLayer
                 RelayPacket _packet;
                 try { _packet = JsonSerializer.Deserialize<RelayPacket>(_result.Buffer, _jsonOptions); }
                 catch (JsonException) { continue; }
-                if (_packet != null) _receivedPackets.Enqueue(_packet);
+                if (_packet == null) continue;
+                if (_receivedPackets.Count >= _receivedPacketLimit)
+                {
+                    if (DateTime.UtcNow - _lastOverflowWarnUtc > TimeSpan.FromSeconds(5))
+                    {
+                        _lastOverflowWarnUtc = DateTime.UtcNow;
+                        FusionLogger.Warn("The relay receive queue is full; dropping packets.");
+                    }
+                    continue;
+                }
+                _receivedPackets.Enqueue(_packet);
             }
         }
         catch (OperationCanceledException) { }

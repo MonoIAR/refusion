@@ -132,10 +132,10 @@ internal sealed class RelayServer
         finally
         {
             _stopSource.Cancel();
-            try { await _cleanupTask; } catch (Exception _exception) { Log("ERROR", $"Cleanup task failed: {_exception.Message}"); }
+            try { await _cleanupTask; } catch (OperationCanceledException) { } catch (Exception _exception) { Log("ERROR", $"Cleanup task failed: {_exception.Message}"); }
             if (_consoleTask.IsCompleted)
             {
-                try { await _consoleTask; } catch (Exception _exception) { Log("ERROR", $"Console task failed: {_exception.Message}"); }
+                try { await _consoleTask; } catch (OperationCanceledException) { } catch (Exception _exception) { Log("ERROR", $"Console task failed: {_exception.Message}"); }
             }
             _socket.Dispose();
         }
@@ -339,7 +339,8 @@ internal sealed class RelayServer
             {
                 _packet.Type = "ClientMessage";
                 _packet.IsServerHandled = false;
-                await BroadcastExceptSmallIdAsync(client.SmallId, _packet);
+                // The pseudo-host must receive its own broadcasts; upstream hosts got them through a self-connection.
+                await BroadcastAllAsync(_packet);
                 return;
             }
             if (string.Equals(message.Mode, "ServerTarget", StringComparison.OrdinalIgnoreCase))

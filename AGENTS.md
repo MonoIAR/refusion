@@ -43,7 +43,7 @@ dotnet build RefusionRelay/RefusionRelay.csproj -c Debug
 
 There are no post-build copy steps for the main mod — deploying means manually copying `LabFusion.dll` (and `BonelabSupport.dll` via its own post-build) into the game's `Mods`/`Plugins` folders.
 
-**Known broken build:** `BonelabSupport` currently fails with `CS0122` on `FusionLogger` (made `internal` in LabFusion when the module was split into its own assembly; no `InternalsVisibleTo`). This is a pre-existing repo issue, not an environment problem. The other three projects build clean.
+All four projects build clean (`BonelabSupport` relies on `InternalsVisibleTo` from LabFusion).
 
 ## Architecture Notes
 

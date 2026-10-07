@@ -363,3 +363,6 @@ LabFusion/FusionBundles/Assets/AddressableAssetsData
 
 # IDE files
 .vscode/
+
+# Trash
+LabFusion/SupportModules/

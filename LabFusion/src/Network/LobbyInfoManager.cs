@@ -10,6 +10,7 @@ namespace LabFusion.Network;
 public static class LobbyInfoManager
 {
     private static LobbyInfo _lobbyInfo = LobbyInfo.Empty;
+    private static string _lastPushedJson = string.Empty;
     public static LobbyInfo LobbyInfo
     {
         get
@@ -45,6 +46,7 @@ public static class LobbyInfoManager
         // Make sure we actually have a Network Layer
         if (NetworkLayerManager.Layer == null)
         {
+            _lastPushedJson = string.Empty;
             LobbyInfo = LobbyInfo.Empty;
             return;
         }
@@ -52,6 +54,7 @@ public static class LobbyInfoManager
         // If there is no server, empty the lobby info
         if (!NetworkInfo.HasServer)
         {
+            _lastPushedJson = string.Empty;
             LobbyInfo = LobbyInfo.Empty;
             return;
         }
@@ -66,14 +69,22 @@ public static class LobbyInfoManager
         var info = new LobbyInfo();
         info.WriteLobby();
 
-        LobbyInfo = info;
-
         // If a server is active, send the info
         if (NetworkInfo.IsHost)
         {
+            var _json = JsonSerializer.Serialize(info);
+
+            // The hooks that trigger this can fire many times with identical content
+            if (_json == _lastPushedJson) return;
+            _lastPushedJson = _json;
+
+            LobbyInfo = info;
             SendLobbyInfo();
-            if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer) _layer.SetServerSettings(JsonSerializer.Serialize(info));
+            if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer _layer) _layer.SetServerSettings(_json);
+            return;
         }
+
+        LobbyInfo = info;
     }
 
     private static void SendLobbyInfo()

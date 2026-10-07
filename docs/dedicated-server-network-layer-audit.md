@@ -582,3 +582,11 @@ Removed client surface:
 RoomCode (`GetServerCode`/`RefreshServerCode`/`JoinServerByCode`) was deliberately kept in the Steam removal round and then retired in the follow-up menu pass: the relay address is the join key, so the server page now shows the address with a "Copy Address" button, `JoinServerByCode` was renamed to `JoinServerByAddress`, and the random code generation/wiring (`GetServerCode`/`RefreshServerCode` and the Welcome-time generation call) was removed. `RandomCodeGenerator` remains as an unused generic utility.
 
 Relay addresses accept hostnames and `localhost`, not just IP literals. On join, the client resolves the host off the main thread (`Dns.GetHostAddressesAsync`) and re-enters the connect flow on the main thread through a queued action; the server page and lobby metadata keep the address as typed. The server-browser query path resolves hostnames synchronously (it already blocks on its UDP receive). Malformed addresses and failed resolutions now raise in-game error notifications instead of only logging.
+
+### Two-Client Test Fixes (2026-10-07)
+
+The first live two-client test exposed a missing host loopback. Upstream hosts received their own broadcasts through a self-connection, and several handlers depend on it: `ConnectionResponseMessage` inserts the joining player's `PlayerID` on the host, and the spawn flow creates the object in `SpawnResponseMessage`. Fixes:
+
+- Relay `ServerBroadcast` now echoes to the pseudo-host as well (previously broadcast to every client except the host), restoring upstream loopback parity.
+- The relay layer's `SendFromServer(ulong)` resolves targets through the relay identity map (`_relaySmallIds`) when the target has no `PlayerID` inserted yet, matching upstream's transport-level resolution (`ConnectedSteamIDs`). Without it the join catch-up (existing player state, level load, dynamics assignment, lobby info) was silently dropped, because the host sends those to the joiner before the joiner's `PlayerID` exists on the host.
+- Expected shutdown no longer logs `Cleanup task failed: The operation was canceled.`
