@@ -6,6 +6,15 @@ Older builds stored these files in the process working directory. Move any exist
 
 The relay listens on UDP port 28430 by default. Set `"port"` in `refusion-server-settings.json` (1-65535) to change it; a port passed as the first command-line argument overrides the file. The port is read once at startup.
 
+Set `"statusPort"` (1-65535) in `refusion-server-settings.json` to enable a read-only HTTP status endpoint at `GET /status` (also served at `/`); `0` or omitted keeps it disabled, and the port is read once at startup. If `"statusToken"` is set, requests must carry `?token=<value>` or they receive `401 Unauthorized`. The JSON contains the relay's transport-level view (server info, connected sessions with endpoints, operators, bans) and `lobby`: the pseudo-host's last reported lobby state, including the host's own player list and player count — useful for spotting a divergence between the relay's sessions and the in-game player list. The endpoint is read-only and never mutates game state.
+
+```json
+{
+  "statusPort": 28431,
+  "statusToken": "change-me"
+}
+```
+
 ```json
 {
   "operators": [

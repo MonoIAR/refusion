@@ -49,6 +49,8 @@ internal sealed class RelayServer
     private readonly string _serverId;
     private readonly RelaySettings _settings;
     private readonly RelayAccessList _accessList;
+    private readonly DateTime _startUtc = DateTime.UtcNow;
+    private TcpListener? _statusListener;
     private int _nextClientId;
     private byte _nextSmallId = 1;
     private int? _ownerClientId;
@@ -109,6 +111,27 @@ internal sealed class RelayServer
         Log("INFO", $"State file: {_stateFilePath}");
         Log("INFO", $"Settings file: {_settingsFilePath}");
         Log("INFO", $"Access file: {_accessFilePath}");
+        var _statusTask = Task.CompletedTask;
+        if (_settings.StatusPort is >= 1 and <= 65535)
+        {
+            try
+            {
+                var _listener = new TcpListener(IPAddress.Any, _settings.StatusPort);
+                _listener.Start();
+                _statusListener = _listener;
+                _statusTask = Task.Run(() => RunStatusApiAsync(_listener, _stopSource.Token));
+                Log("INFO", $"Status API: http://0.0.0.0:{_settings.StatusPort}/status");
+            }
+            catch (SocketException _exception)
+            {
+                _statusListener = null;
+                Log("WARN", $"Could not bind status API port {_settings.StatusPort}: {_exception.Message}");
+            }
+        }
+        else
+        {
+            Log("INFO", "Status API: disabled (set statusPort in refusion-server-settings.json to enable)");
+        }
         var _cleanupTask = CleanupAsync(_stopSource.Token);
         var _consoleTask = Task.Run(() => ReadConsoleAsync(_stopSource.Token));
         try
@@ -132,13 +155,192 @@ internal sealed class RelayServer
         finally
         {
             _stopSource.Cancel();
+            _statusListener?.Stop();
             try { await _cleanupTask; } catch (OperationCanceledException) { } catch (Exception _exception) { Log("ERROR", $"Cleanup task failed: {_exception.Message}"); }
+            try { await _statusTask; } catch (OperationCanceledException) { } catch (Exception _exception) { Log("ERROR", $"Status task failed: {_exception.Message}"); }
             if (_consoleTask.IsCompleted)
             {
                 try { await _consoleTask; } catch (OperationCanceledException) { } catch (Exception _exception) { Log("ERROR", $"Console task failed: {_exception.Message}"); }
             }
             _socket.Dispose();
         }
+    }
+
+    private async Task RunStatusApiAsync(TcpListener listener, CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            TcpClient _statusClient;
+            try { _statusClient = await listener.AcceptTcpClientAsync(token); }
+            catch (OperationCanceledException) { break; }
+            catch (ObjectDisposedException) { break; }
+            catch (SocketException _exception)
+            {
+                if (token.IsCancellationRequested) break;
+                LogRateLimited("status-accept", "WARN", $"Status API accept failed: {_exception.SocketErrorCode}");
+                continue;
+            }
+            _ = Task.Run(() => HandleStatusClient(_statusClient));
+        }
+    }
+
+    private void HandleStatusClient(TcpClient statusClient)
+    {
+        using (statusClient)
+        {
+            try
+            {
+                statusClient.ReceiveTimeout = 5000;
+                statusClient.SendTimeout = 5000;
+                using var _stream = statusClient.GetStream();
+                if (!TryReadStatusRequest(_stream, out var _method, out var _path, out var _query))
+                {
+                    WriteStatusResponse(_stream, 400, "Bad Request", "{\"error\":\"bad_request\"}");
+                    return;
+                }
+                if (_method != "GET")
+                {
+                    WriteStatusResponse(_stream, 405, "Method Not Allowed", "{\"error\":\"method_not_allowed\"}");
+                    return;
+                }
+                if (_path != "/" && _path != "/status")
+                {
+                    WriteStatusResponse(_stream, 404, "Not Found", "{\"error\":\"not_found\"}");
+                    return;
+                }
+                if (!IsStatusAuthorized(_query))
+                {
+                    WriteStatusResponse(_stream, 401, "Unauthorized", "{\"error\":\"unauthorized\"}");
+                    return;
+                }
+                WriteStatusResponse(_stream, 200, "OK", CreateStatusJson());
+            }
+            catch (Exception _exception)
+            {
+                LogRateLimited("status-client", "WARN", $"Status API request failed: {_exception.Message}");
+            }
+        }
+    }
+
+    private static bool TryReadStatusRequest(NetworkStream stream, out string method, out string path, out string query)
+    {
+        method = string.Empty;
+        path = string.Empty;
+        query = string.Empty;
+        var _buffer = new byte[4096];
+        var _length = 0;
+        while (_length < _buffer.Length)
+        {
+            int _read;
+            try { _read = stream.Read(_buffer, _length, _buffer.Length - _length); }
+            catch { return false; }
+            if (_read <= 0) return false;
+            _length += _read;
+            if (ContainsHeadersEnd(_buffer, _length)) break;
+        }
+        var _text = Encoding.ASCII.GetString(_buffer, 0, _length);
+        var _lineEnd = _text.IndexOf('\r');
+        if (_lineEnd < 0) return false;
+        var _parts = _text[.._lineEnd].Split(' ');
+        if (_parts.Length < 2) return false;
+        method = _parts[0];
+        var _target = _parts[1];
+        var _queryIndex = _target.IndexOf('?');
+        if (_queryIndex >= 0)
+        {
+            path = _target[.._queryIndex];
+            query = _target[(_queryIndex + 1)..];
+        }
+        else
+        {
+            path = _target;
+        }
+        return true;
+    }
+
+    private static bool ContainsHeadersEnd(byte[] buffer, int length)
+    {
+        for (var i = 3; i < length; i++)
+        {
+            if (buffer[i - 3] == 13 && buffer[i - 2] == 10 && buffer[i - 1] == 13 && buffer[i] == 10) return true;
+        }
+        return false;
+    }
+
+    private bool IsStatusAuthorized(string query)
+    {
+        if (string.IsNullOrWhiteSpace(_settings.StatusToken)) return true;
+        foreach (var _pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var _separator = _pair.IndexOf('=');
+            if (_separator > 0 && _pair[.._separator].Equals("token", StringComparison.OrdinalIgnoreCase)
+                && _pair[(_separator + 1)..].Equals(_settings.StatusToken, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    private static void WriteStatusResponse(NetworkStream stream, int statusCode, string reason, string body)
+    {
+        var _body = Encoding.UTF8.GetBytes(body);
+        var _header = Encoding.ASCII.GetBytes($"HTTP/1.1 {statusCode} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {_body.Length}\r\nConnection: close\r\n\r\n");
+        stream.Write(_header, 0, _header.Length);
+        stream.Write(_body, 0, _body.Length);
+    }
+
+    private string CreateStatusJson()
+    {
+        JsonElement? _lobby = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_settingsJson)) _lobby = JsonDocument.Parse(_settingsJson).RootElement.Clone();
+        }
+        catch (JsonException) { }
+
+        string[] _operators;
+        RelayBanEntry[] _bans;
+        lock (_gate)
+        {
+            _operators = _accessList.Operators.Select(_entry => _entry.PlayerId).ToArray();
+            _bans = _accessList.Bans.ToArray();
+        }
+
+        var _status = new
+        {
+            Server = new
+            {
+                Id = _serverId,
+                Version = _serverVersion,
+                Protocol = _protocolVersion,
+                UptimeSeconds = (int)(DateTime.UtcNow - _startUtc).TotalSeconds,
+                Port = _socket.Client.LocalEndPoint is IPEndPoint _localEndPoint ? _localEndPoint.Port : 0,
+                PlayerCount = _clients.Count,
+                MaxPlayers = _settings.MaxPlayers,
+                LevelBarcode = _levelBarcode,
+                LoadingScreenBarcode = _loadingScreenBarcode,
+                IsLoading = _isLoading,
+                Motd = _motd,
+                ServerName = _settings.ServerName,
+                HostName = _settings.HostName,
+                GamemodeTitle = _settings.GamemodeTitle,
+                GamemodeBarcode = _settings.GamemodeBarcode,
+            },
+            Players = _clients.Values.OrderBy(_value => _value.SmallId).Select(_value => new
+            {
+                ClientId = _value.ClientId,
+                SmallId = _value.SmallId,
+                Name = _value.Name,
+                PersistentPlayerId = _value.PersistentPlayerId,
+                Endpoint = _value.EndPoint.ToString(),
+                IsOwner = _value.ClientId == _ownerClientId,
+                IsOperator = IsOperator(_value.PersistentPlayerId),
+                LastSeenSecondsAgo = Math.Round((DateTime.UtcNow - _value.LastSeenUtc).TotalSeconds, 1),
+            }).ToArray(),
+            Lobby = _lobby,
+            Operators = _operators,
+            Bans = _bans.Select(_entry => new { _entry.PlayerId, _entry.Reason, _entry.CreatedUtc }).ToArray(),
+        };
+
+        return JsonSerializer.Serialize(_status, _jsonOptions);
     }
 
     private void PrintBanner()
@@ -977,6 +1179,8 @@ internal sealed class RelaySettings
     public bool AnticheatEnabled { get; set; }
     public int Port { get; set; } = DefaultPort;
     public int MaxPlayers { get; set; } = 255;
+    public int StatusPort { get; set; } = 0;
+    public string? StatusToken { get; set; }
     public string? ServerName { get; set; }
     public string? HostName { get; set; }
     public string? GamemodeTitle { get; set; }
