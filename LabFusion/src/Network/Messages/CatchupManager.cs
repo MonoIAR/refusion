@@ -31,7 +31,7 @@ public static class CatchupManager
 
     public static void RequestEntityDataCatchup(PlayerID ownerID, NetworkEntityReference entityReference)
     {
-        if (ownerID.IsMe)
+        if (PlayerID.IsNullOrInvalid(ownerID) || ownerID.IsMe)
         {
             return;
         }

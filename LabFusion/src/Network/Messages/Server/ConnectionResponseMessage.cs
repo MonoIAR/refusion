@@ -44,12 +44,56 @@ public class ConnectionResponseMessage : NativeMessageHandler
     {
         var data = received.ReadData<ConnectionResponseData>();
 
+        bool isMine = data.PlayerID.PlatformID == PlayerIDManager.LocalPlatformID;
+
+        var existing = PlayerIDManager.GetPlayerID(data.PlayerID.PlatformID);
+
+        // Duplicated responses (re-sent joins, host broadcast loopback) must not rebuild existing players
+        if (existing != null && existing.SmallID == data.PlayerID.SmallID)
+        {
+            // Our own half-completed registration is repaired by NetworkPlayerManager instead
+            if (isMine)
+            {
+                return;
+            }
+
+            // The id was received previously, but the player was never fully created
+            if (!NetworkPlayerManager.TryGetPlayer(existing.SmallID, out _))
+            {
+                // Clear any residual entity from a half-completed registration before recreating
+                var residual = NetworkEntityManager.IDManager.RegisteredEntities.GetEntity(existing.SmallID);
+
+                if (residual != null)
+                {
+                    NetworkEntityManager.IDManager.UnregisterEntity(residual);
+                }
+
+                InternalServerHelpers.OnPlayerJoined(existing, data.IsInitialJoin);
+
+                var missingPlayer = NetworkPlayerManager.CreateNetworkPlayer(existing);
+                missingPlayer.AvatarSetter.SwapAvatar(data.AvatarStats, data.AvatarBarcode);
+
+                if (NetworkInfo.IsHost)
+                {
+                    CatchupPlayer(existing);
+                }
+            }
+
+            return;
+        }
+
+        // The player rejoined with a new small id before the old entry was cleaned up
+        if (existing != null)
+        {
+            existing.Cleanup();
+        }
+
         // Insert the id into our list
         data.PlayerID.Insert();
 
         // Check the id to see if its our own
         // If it is, just update our self reference
-        if (data.PlayerID.PlatformID == PlayerIDManager.LocalPlatformID)
+        if (isMine)
         {
             PlayerIDManager.ApplyLocalID();
 

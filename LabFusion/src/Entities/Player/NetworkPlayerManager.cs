@@ -4,6 +4,8 @@ using Il2CppSLZ.Marrow.Interaction;
 using LabFusion.Player;
 using LabFusion.Utilities;
 using LabFusion.Data;
+using LabFusion.Scene;
+using LabFusion.Network;
 
 namespace LabFusion.Entities;
 
@@ -18,6 +20,45 @@ public static class NetworkPlayerManager
         for (var i = PlayerIDManager.MinPlayerID; i <= PlayerIDManager.MaxPlayerID; i++)
         {
             NetworkEntityManager.IDManager.RegisteredEntities.ReserveID((ushort)i);
+        }
+
+        MultiplayerHooking.OnMainSceneInitialized += OnMainSceneInitialized;
+    }
+
+    private static void OnMainSceneInitialized()
+    {
+        if (!NetworkInfo.HasServer || FusionSceneManager.IsLoading())
+        {
+            return;
+        }
+
+        var localId = PlayerIDManager.LocalID;
+
+        if (localId == null)
+        {
+            return;
+        }
+
+        var localPlayer = LocalPlayer.GetNetworkPlayer();
+
+        if (localPlayer == null)
+        {
+            // Clear any residual entity from a half-completed registration before recreating
+            var residual = NetworkEntityManager.IDManager.RegisteredEntities.GetEntity(localId.SmallID);
+
+            if (residual != null)
+            {
+                NetworkEntityManager.IDManager.UnregisterEntity(residual);
+            }
+
+            FusionLogger.Warn("The local NetworkPlayer was missing after a scene load. Recreating it.");
+            CreateLocalPlayer();
+            return;
+        }
+
+        if (!localPlayer.HasRig)
+        {
+            localPlayer.FindRigManager();
         }
     }
 

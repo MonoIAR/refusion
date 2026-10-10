@@ -5,6 +5,7 @@ using LabFusion.Extensions;
 using LabFusion.Marrow;
 using LabFusion.Network.Serialization;
 using LabFusion.Player;
+using LabFusion.Utilities;
 
 namespace LabFusion.Network;
 
@@ -52,6 +53,10 @@ public class ModInfoRequestMessage : NativeMessageHandler
 
         if (crate == null)
         {
+#if DEBUG
+            FusionLogger.Warn($"Mod info request for {data.Barcode} was dropped: the crate was not found.");
+#endif
+
             return;
         }
 
@@ -60,6 +65,10 @@ public class ModInfoRequestMessage : NativeMessageHandler
         // Make sure the pallet isn't part of a marrow game and is a mod
         if (pallet.IsInMarrowGame())
         {
+#if DEBUG
+            FusionLogger.Warn($"Mod info request for {data.Barcode} was dropped: the pallet is part of a marrow game.");
+#endif
+
             return;
         }
 
@@ -68,6 +77,10 @@ public class ModInfoRequestMessage : NativeMessageHandler
 
         if (manifest == null)
         {
+#if DEBUG
+            FusionLogger.Warn($"Mod info request for {data.Barcode} was dropped: the manifest was not found.");
+#endif
+
             return;
         }
 
@@ -77,6 +90,10 @@ public class ModInfoRequestMessage : NativeMessageHandler
 
         if (modTarget == null)
         {
+#if DEBUG
+            FusionLogger.Warn($"Mod info request for {data.Barcode} was dropped: the listing has no mod.io target.");
+#endif
+
             return;
         }
 

@@ -71,6 +71,20 @@ public class ConnectionRequestMessage : NativeMessageHandler
 
         ulong platformID = received.PlatformID ?? data.BackupPlatformID;
 
+        // If the connection request is invalid, deny it
+        if (!data.IsValid)
+        {
+            Deny(platformID, "Connection request was invalid. You are likely on mismatching versions.");
+            return;
+        }
+
+        // Make sure we aren't loading
+        if (FusionSceneManager.IsLoading())
+        {
+            Deny(platformID, "The server is loading a level. Please try again later.");
+            return;
+        }
+
         byte? newSmallId = null;
         if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer && received.PlatformID.HasValue && DedicatedServerNetworkLayer.TryGetRelaySmallId(received.PlatformID.Value, out var _relaySmallId))
         {
@@ -81,38 +95,33 @@ public class ConnectionRequestMessage : NativeMessageHandler
             newSmallId = PlayerIDManager.GetUniquePlayerID();
         }
 
+        // Clients retry connection requests, so an already accepted player asking again gets a re-send instead of a deny
+        var existing = PlayerIDManager.GetPlayerID(platformID);
+
+        if (existing != null)
+        {
+            if (newSmallId.HasValue && existing.SmallID == newSmallId.Value)
+            {
+                FusionLogger.Warn($"Re-accepting connection request from {platformID} (small id {existing.SmallID}).");
+                ReacceptConnection(existing, platformID, data);
+                return;
+            }
+
+            FusionLogger.Warn($"Connection request from {platformID} had a stale small id; replacing the old entry.");
+            existing.Cleanup();
+        }
+
         // No unused ids available
-        if (!newSmallId.HasValue || PlayerIDManager.IsSmallIDReserved(newSmallId.Value))
+        if (!newSmallId.HasValue || PlayerIDManager.HasPlayerID(newSmallId.Value))
         {
-            ConnectionSender.SendConnectionDeny(platformID, "Server ran out of space! Wait for someone to leave.");
-            return;
-        }
-
-        // Player already is in the server?
-        if (PlayerIDManager.GetPlayerID(platformID) != null)
-        {
-            ConnectionSender.SendConnectionDeny(platformID, "You attempted to join, but the server detects you as already in it?");
-            return;
-        }
-
-        // If the connection request is invalid, deny it
-        if (!data.IsValid)
-        {
-            ConnectionSender.SendConnectionDeny(platformID, "Connection request was invalid. You are likely on mismatching versions.");
+            Deny(platformID, "Server ran out of space! Wait for someone to leave.");
             return;
         }
 
         // Check if theres too many players
         if (PlayerIDManager.PlayerCount >= byte.MaxValue || PlayerIDManager.PlayerCount >= SavedServerSettings.MaxPlayers.Value)
         {
-            ConnectionSender.SendConnectionDeny(platformID, "Server is full! Wait for someone to leave.");
-            return;
-        }
-
-        // Make sure we aren't loading
-        if (FusionSceneManager.IsLoading())
-        {
-            ConnectionSender.SendConnectionDeny(platformID, "The server is loading a level. Please try again later.");
+            Deny(platformID, "Server is full! Wait for someone to leave.");
             return;
         }
 
@@ -121,7 +130,7 @@ public class ConnectionRequestMessage : NativeMessageHandler
 
         if (!isVerified)
         {
-            ConnectionSender.SendConnectionDeny(platformID, "Server is private.");
+            Deny(platformID, "Server is private.");
             return;
         }
 
@@ -134,13 +143,13 @@ public class ConnectionRequestMessage : NativeMessageHandler
             {
                 default:
                 case VersionResult.Unknown:
-                    ConnectionSender.SendConnectionDeny(platformID, "Unknown Version Mismatch");
+                    Deny(platformID, "Unknown Version Mismatch");
                     break;
                 case VersionResult.Lower:
-                    ConnectionSender.SendConnectionDeny(platformID, "Server is on an older version. Downgrade your version or notify the host.");
+                    Deny(platformID, "Server is on an older version. Downgrade your version or notify the host.");
                     break;
                 case VersionResult.Higher:
-                    ConnectionSender.SendConnectionDeny(platformID, "Server is on a newer version. Update your version.");
+                    Deny(platformID, "Server is on a newer version. Update your version.");
                     break;
             }
 
@@ -153,7 +162,7 @@ public class ConnectionRequestMessage : NativeMessageHandler
         // Check for banning
         if (NetworkHelper.IsBanned(platformID))
         {
-            ConnectionSender.SendConnectionDeny(platformID, "Banned from Server");
+            Deny(platformID, "Banned from Server");
             return;
         }
 
@@ -166,7 +175,7 @@ public class ConnectionRequestMessage : NativeMessageHandler
         // Finally, check for dynamic connection disallowing
         if (!MultiplayerHooking.CheckShouldAllowConnection(playerId, out string reason))
         {
-            ConnectionSender.SendConnectionDeny(platformID, reason);
+            Deny(platformID, reason);
             return;
         }
 
@@ -174,11 +183,29 @@ public class ConnectionRequestMessage : NativeMessageHandler
         OnConnectionAllowed(playerId, platformID, data);
     }
 
+    private static void Deny(ulong platformID, string reason)
+    {
+        FusionLogger.Warn($"Denied connection request from {platformID}: {reason}");
+        ConnectionSender.SendConnectionDeny(platformID, reason);
+    }
+
     private static void OnConnectionAllowed(PlayerID playerID, ulong platformID, ConnectionRequestData data)
     {
         // Reserve the player's smallID so that other players don't steal it
         PlayerIDManager.ReserveSmallID(playerID.SmallID);
 
+        FusionLogger.Log($"Accepted connection from {platformID} as small id {playerID.SmallID}.");
+
+        SendJoinAndCatchup(playerID, platformID, data);
+    }
+
+    private static void ReacceptConnection(PlayerID playerID, ulong platformID, ConnectionRequestData data)
+    {
+        SendJoinAndCatchup(playerID, platformID, data);
+    }
+
+    private static void SendJoinAndCatchup(PlayerID playerID, ulong platformID, ConnectionRequestData data)
+    {
         // Send the new player to all existing players (and the new player so they know they exist)
         ConnectionSender.SendPlayerJoin(playerID, data.AvatarBarcode, data.AvatarStats);
 

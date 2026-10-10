@@ -550,14 +550,29 @@ public static class MenuLocation
     {
         var element = LobbyElement;
 
+        if (element == null || element.BansElement == null)
+        {
+            return;
+        }
+
         element.BansElement.Clear();
 
         var banListPage = element.BansElement.AddPage();
 
+        if (banListPage == null)
+        {
+            return;
+        }
+
         if (NetworkLayerManager.Layer is DedicatedServerNetworkLayer)
         {
-            banListPage.AddElement<LabelElement>("Bans")
-                .WithTitle("Ban list is managed by the dedicated server relay.");
+            var label = banListPage.AddElement<LabelElement>("Bans");
+
+            if (label != null)
+            {
+                label.WithTitle("Ban list is managed by the dedicated server relay.");
+            }
+
             return;
         }
 
@@ -565,11 +580,21 @@ public static class MenuLocation
 
         foreach (var ban in BanManager.BanList.Bans)
         {
+            if (ban == null || ban.Player == null)
+            {
+                continue;
+            }
+
             var player = ban.Player;
 
             string username = player.Username.RemoveRichText();
 
             var banResult = banListPage.AddElement<PlayerResultElement>(username);
+
+            if (banResult == null)
+            {
+                continue;
+            }
 
             banResult.GetReferences();
 

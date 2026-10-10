@@ -66,9 +66,10 @@ public static class NetworkModRequester
     private static IEnumerator WaitAndInstallMod(ModInstallInfo installInfo)
     {
         float elapsed = 0f;
+        int attempts = 1;
         bool receivedCallback = false;
 
-        RequestMod(new ModRequestInfo()
+        var trackerId = RequestMod(new ModRequestInfo()
         {
             Target = installInfo.Target,
             Barcode = installInfo.Barcode,
@@ -76,9 +77,16 @@ public static class NetworkModRequester
         });
 
         // Wait for timeout
-        while (!receivedCallback && elapsed < 5f)
+        while (!receivedCallback && elapsed < 10f)
         {
             elapsed += TimeReferences.DeltaTime;
+
+            if (!receivedCallback && attempts < 3 && elapsed > attempts * 3.5f)
+            {
+                attempts++;
+                ResendModRequest(installInfo.Target, installInfo.Barcode, trackerId);
+            }
+
             yield return null;
         }
 
@@ -88,6 +96,8 @@ public static class NetworkModRequester
 #if DEBUG
             FusionLogger.Warn($"Mod request for {installInfo.Barcode} timed out.");
 #endif
+
+            CancelCallback(trackerId);
 
             installInfo.FinishDownloadCallback?.Invoke(DownloadCallbackInfo.FailedCallback);
 
@@ -131,7 +141,7 @@ public static class NetworkModRequester
         }
     }
 
-    public static void RequestMod(ModRequestInfo info)
+    public static uint RequestMod(ModRequestInfo info)
     {
         uint trackerId = _lastTrackedRequest++;
 
@@ -140,13 +150,24 @@ public static class NetworkModRequester
             _callbackQueue.Add(trackerId, info.ModCallback);
         }
 
-        // Send the request to the server
+        ResendModRequest(info.Target, info.Barcode, trackerId);
+
+        return trackerId;
+    }
+
+    public static void ResendModRequest(byte target, string barcode, uint trackerId)
+    {
         var data = new ModInfoRequestData()
         {
-            Barcode = info.Barcode,
+            Barcode = barcode,
             TrackerID = trackerId,
         };
 
-        MessageRelay.RelayNative(data, NativeMessageTag.ModInfoRequest, new MessageRoute(info.Target, NetworkChannel.Reliable));
+        MessageRelay.RelayNative(data, NativeMessageTag.ModInfoRequest, new MessageRoute(target, NetworkChannel.Reliable));
+    }
+
+    internal static void CancelCallback(uint trackerId)
+    {
+        _callbackQueue.Remove(trackerId);
     }
 }

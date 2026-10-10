@@ -102,6 +102,11 @@ public static class LocalPlayer
             return null;
         }
 
+        if (PlayerIDManager.LocalID == null)
+        {
+            return null;
+        }
+
         if (NetworkPlayerManager.TryGetPlayer(PlayerIDManager.LocalID, out var player))
         {
             return player;

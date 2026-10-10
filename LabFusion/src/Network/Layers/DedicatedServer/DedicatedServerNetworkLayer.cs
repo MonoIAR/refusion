@@ -51,6 +51,8 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     private string _sessionToken = string.Empty;
     private DateTime _lastPingUtc;
     private DateTime _joinDeadlineUtc = DateTime.MinValue;
+    private DateTime _lastFusionJoinRetryUtc = DateTime.MinValue;
+    private DateTime _fusionJoinDeadlineUtc = DateTime.MinValue;
     private DateTime _lastOverflowWarnUtc = DateTime.MinValue;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentQueue<RelayPacket> _receivedPackets = new();
@@ -64,6 +66,8 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     private const int _receivedPacketLimit = 1024;
     private const int _receivedPacketDrainBudget = 256;
     private static readonly TimeSpan _joinTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan _fusionJoinTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan _fusionJoinRetryInterval = TimeSpan.FromSeconds(2);
 
     public override bool CheckSupported()
     {
@@ -127,6 +131,25 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             Disconnect("The server did not respond.");
             return;
         }
+        if (_fusionJoinDeadlineUtc != DateTime.MinValue)
+        {
+            if (PlayerIDManager.LocalID != null)
+            {
+                _fusionJoinDeadlineUtc = DateTime.MinValue;
+            }
+            else if (DateTime.UtcNow > _fusionJoinDeadlineUtc)
+            {
+                _fusionJoinDeadlineUtc = DateTime.MinValue;
+                FusionLogger.Warn("The server did not complete the Fusion-level join before the timeout.");
+                Disconnect("The server did not respond.");
+                return;
+            }
+            else if (DateTime.UtcNow - _lastFusionJoinRetryUtc > _fusionJoinRetryInterval)
+            {
+                _lastFusionJoinRetryUtc = DateTime.UtcNow;
+                SendConnectionRequestSafe();
+            }
+        }
         for (var _i = 0; _i < _receivedPacketDrainBudget && _receivedPackets.TryDequeue(out var _packet); _i++) HandleRelayPacket(_packet);
         while (_serverCommands.TryDequeue(out var _command)) ExecuteServerCommand(_command);
         if (DateTime.UtcNow - _lastPingUtc > TimeSpan.FromSeconds(5))
@@ -134,6 +157,19 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             _lastPingUtc = DateTime.UtcNow;
             SendRelayPacket(new RelayPacket { Type = "Ping", ClientId = _clientId });
         }
+    }
+
+    private void SendConnectionRequestSafe()
+    {
+        try
+        {
+            if (!NetworkInfo.HasServer || _isServerActive) return;
+            ConnectionSender.SendConnectionRequest();
+#if DEBUG
+            FusionLogger.Log("Sent a connection request to the dedicated server.");
+#endif
+        }
+        catch (Exception _exception) { FusionLogger.LogException("sending a connection request", _exception); }
     }
 
     public override string GetUsername(ulong userId)
@@ -241,7 +277,13 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         _receiveSource = null;
         _clientId = 0;
         _smallId = 0;
+        _ownerClientId = 0;
+        _isRelayOperator = false;
         _sessionToken = string.Empty;
+        _joinDeadlineUtc = DateTime.MinValue;
+        _lastPingUtc = DateTime.MinValue;
+        _lastFusionJoinRetryUtc = DateTime.MinValue;
+        _fusionJoinDeadlineUtc = DateTime.MinValue;
         _serverAddress = string.Empty;
         _relaySmallIds.Clear();
         _relayOperators.Clear();
@@ -349,6 +391,8 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         _isConnectionActive = true;
         _lastPingUtc = DateTime.UtcNow;
         _joinDeadlineUtc = DateTime.UtcNow + _joinTimeout;
+        _lastFusionJoinRetryUtc = DateTime.MinValue;
+        _fusionJoinDeadlineUtc = DateTime.MinValue;
         _ = ReceiveRelayPacketsAsync(_receiveSource.Token);
         SendRelayPacket(new RelayPacket { Type = "Hello", ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion, PersistentPlayerId = RefusionIdentity.PlayerId, PlatformId = PlayerIDManager.LocalPlatformID, Name = LocalPlayer.Username });
     }
@@ -406,7 +450,12 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             _relayOperators[PlayerIDManager.LocalPlatformID] = packet.IsOperator;
             _relayPersistentIds[PlayerIDManager.LocalPlatformID] = packet.PersistentPlayerId;
             if (_isServerActive) { InternalServerHelpers.OnStartServer(); }
-            else ConnectionSender.SendConnectionRequest();
+            else
+            {
+                _lastFusionJoinRetryUtc = DateTime.UtcNow;
+                _fusionJoinDeadlineUtc = DateTime.UtcNow + _fusionJoinTimeout;
+                SendConnectionRequestSafe();
+            }
             return;
         }
         if (packet.Type.Equals("SettingsState", StringComparison.OrdinalIgnoreCase))

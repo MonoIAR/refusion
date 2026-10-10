@@ -240,11 +240,103 @@ public class NetworkPlayer : IEntityExtender, IMarrowEntityExtender, IEntityUpda
     {
         if (NetworkEntity.IsOwner)
         {
-            OnFoundRigManager(RigData.Refs.RigManager);
+            if (HasRig && RigRefs.RigManager == RigData.Refs.RigManager)
+            {
+                return;
+            }
+
+            if (CanBindLocalRig())
+            {
+                TryBindLocalRig(RigData.Refs.RigManager);
+                return;
+            }
+
+            // While the scene is transitioning, the rig is not usable yet. Let the scene initialization hook rebind instead
+            if (FusionSceneManager.IsLoading() || FusionSceneManager.IsDelayedLoading())
+            {
+                return;
+            }
+
+            MelonCoroutines.Start(WaitAndBindLocalRig());
         }
         else
         {
             MelonCoroutines.Start(WaitAndCreateRig());
+        }
+    }
+
+    private IEnumerator WaitAndBindLocalRig()
+    {
+        for (var i = 0; i < 300; i++)
+        {
+            if (NetworkEntity == null || PlayerID.IsNullOrInvalid(PlayerID))
+            {
+                yield break;
+            }
+
+            if (FusionSceneManager.IsLoading())
+            {
+                yield break;
+            }
+
+            if (CanBindLocalRig())
+            {
+                TryBindLocalRig(RigData.Refs.RigManager);
+                yield break;
+            }
+
+            yield return null;
+        }
+
+#if DEBUG
+        FusionLogger.Log("Timed out waiting for the local rig to become bindable.");
+#endif
+    }
+
+    private static bool CanBindLocalRig()
+    {
+        if (!RigData.HasPlayer)
+        {
+            return false;
+        }
+
+        var rigManager = RigData.Refs.RigManager;
+
+        if (!rigManager)
+        {
+            return false;
+        }
+
+        var controllerRig = rigManager.ControllerRig;
+
+        if (controllerRig == null)
+        {
+            return false;
+        }
+
+        var openControllerRig = controllerRig.TryCast<OpenControllerRig>();
+
+        if (openControllerRig == null)
+        {
+            return false;
+        }
+
+        // The controllers are the exact references RigSkeleton reads, and they are null during scene transitions
+        return openControllerRig.vrRoot != null
+            && openControllerRig.headset != null
+            && openControllerRig.leftController != null
+            && openControllerRig.rightController != null;
+    }
+
+    private void TryBindLocalRig(RigManager rigManager)
+    {
+        try
+        {
+            OnFoundRigManager(rigManager);
+        }
+        catch (Exception _exception)
+        {
+            FusionLogger.LogException("binding the local player rig", _exception);
         }
     }
 
@@ -282,6 +374,11 @@ public class NetworkPlayer : IEntityExtender, IMarrowEntityExtender, IEntityUpda
 
         bool IsPlayerLoading()
         {
+            if (PlayerID == null || !PlayerID.IsValid)
+            {
+                return false;
+            }
+
             if (FusionSceneManager.IsDelayedLoading())
             {
                 return true;
@@ -306,6 +403,13 @@ public class NetworkPlayer : IEntityExtender, IMarrowEntityExtender, IEntityUpda
 
     private void OnPuppetCreated(RigManager rigManager)
     {
+        // The player may have been kicked or unregistered while the puppet rig was loading
+        if (NetworkEntity == null || PlayerID.IsNullOrInvalid(PlayerID))
+        {
+            DestroyPuppet();
+            return;
+        }
+
         // Spawn the head ui
         _headUI.Spawn();
 
@@ -382,10 +486,12 @@ public class NetworkPlayer : IEntityExtender, IMarrowEntityExtender, IEntityUpda
         LobbyInfoManager.OnLobbyInfoChanged += OnServerSettingsChanged;
         FusionOverrides.OnOverridesChanged += OnServerSettingsChanged;
 
-        // Find the rig for the current scene, and hook into scene loads
-        FindRigManager();
+        // Hook into scene loads before finding the rig, so a failed bind still gets rebound on the next scene
         MultiplayerHooking.OnMainSceneInitialized += OnLevelLoad;
         NetworkSceneManager.OnPurgatoryChanged += OnPurgatoryChanged;
+
+        // Find the rig for the current scene
+        FindRigManager();
     }
 
     private void UnhookPlayer()
@@ -926,6 +1032,16 @@ public class NetworkPlayer : IEntityExtender, IMarrowEntityExtender, IEntityUpda
 
     private void OnFoundRigManager(RigManager rigManager)
     {
+        if (!rigManager)
+        {
+            return;
+        }
+
+        if (HasRig && RigRefs.RigManager == rigManager)
+        {
+            return;
+        }
+
         _marrowEntity = rigManager.physicsRig.marrowEntity;
 
         _rigSkeleton = new(rigManager);
