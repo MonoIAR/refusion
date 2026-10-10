@@ -1,7 +1,7 @@
 {
-    "name": "Fusion",
-    "version_number": "1.14.1",
-    "website_url": "https://github.com/Lakatrazz/BONELAB-Fusion",
-    "description": "A multiplayer mod for BONELAB, taking advantage of its physical interaction.",
+    "name": "Refusion",
+    "version_number": "0.1.0",
+    "website_url": "https://github.com/MonoIAR/refusion",
+    "description": "A multiplayer mod for BONELAB, networked through a dedicated UDP relay server. A fork of BONELAB-Fusion.",
     "dependencies": []
 }

@@ -1,17 +1,34 @@
-# BONELAB Fusion
-Having been in development for 5 months, the long awaited multiplayer mod FUSION for BONELAB is here.<br>
+# Refusion
 
-![](https://i.imgur.com/1ZpMfei.png)
+A multiplayer mod for BONELAB, but reimagined. **Refusion** is a fork of [BONELAB-Fusion](https://github.com/Lakatrazz/BONELAB-Fusion) that replaces Steam networking with a dedicated UDP relay server.
+
+> Many parts of this project are AI-generated.
+> Please DO NOT use or criticize it if you hate AI.
 
 # Installation
-You can find the latest installation guide [here](https://github.com/Lakatrazz/BONELAB-Fusion/wiki#installation).
+
+Refusion replaces BONELAB-Fusion, so remove any previous version of BONELAB-Fusion from your mods folder before installing it.
+
+For general setup instructions (MelonLoader, mod managers, Quest installation), refer to the [LabFusion wiki](https://github.com/Lakatrazz/BONELAB-Fusion/wiki#installation); the same process applies to Refusion.
 
 # About
+
 ## How to Use the Mod
 You can access the Fusion menu by clicking on the "Fusion" button in the Preferences menu.
 
 If you did not already install the [Fusion Content](https://mod.io/g/bonelab/m/fusion-content), clicking this will install it.
 It will only install correctly if you are logged into mod.io in VoidG114 or BONELAB Hub, so make sure this is the case.
+
+## Networking
+Refusion does not use Steam networking. Every player connects directly to a dedicated UDP relay server:
+
+1. Run a relay server (or get the address of one), and share it with the players.
+2. Open the Fusion menu and go to Matchmaking, then select "Enter Address".
+3. Type the relay's address (`IP:port` or `domain:port`, e.g. `example.com:28430`) and click "Join".
+
+There is no separate "create server" step — the first player to connect to the relay becomes the session host, so everybody simply joins the same address.
+
+To host your own relay, the project includes the standalone `RefusionRelay` server; see the [project repository](https://github.com/MonoIAR/refusion) for details.
 
 ## Physical Interactions
 Instead of players and synced props being kinematic, non-physics objects, all interactions are solved using physical forces.<br>
@@ -28,9 +45,12 @@ The entire campaign has been ensured completable, with nearly every custom event
 ## Crossplay Support
 All platforms are able to crossplay together. Every platform connects directly to the same dedicated relay server by entering its address upon opening the menu.
 
+## Compatible Content
+Refusion is intended to be compatible with all existing Fusion modules and SDK features. If you find any compatibility issues, please report them in the [issue tracker](https://github.com/MonoIAR/refusion/issues) or the [MIAR STAFF Discord](https://discord.gg/TTevnjERxR).
+
 # Additional Content
 ## Modules, Gamemodes, and the Bitmart
-Fusion has integrated support to allow other mods to implement Fusion compatibility using "Modules". There is an SDK for Unity, allowing you to implement features while in multiplayer, as well as a code SDK in order to create unique synced features. You can find both of these [here](https://github.com/Lakatrazz/BONELAB-Fusion).
+Fusion has integrated support to allow other mods to implement Fusion compatibility using "Modules". There is an SDK for Unity, allowing you to implement features while in multiplayer, as well as a code SDK in order to create unique synced features. You can find both of these [here](https://github.com/MonoIAR/refusion).
 
 Besides that, Fusion also has integrated gamemodes. The current gamemodes are:
 - Deathmatch, Free-for-all fighting!
@@ -49,16 +69,12 @@ As an additional way to earn Bits, you can accomplish various tasks to complete 
 
 # More
 ## Credits
-You can view the most recent changes and credits in the in game info box in VoidG114.
+- The foundation of this project: [LabFusion](https://github.com/Lakatrazz/BONELAB-Fusion)
+- Main developers: [ChakerAt](https://github.com/cha-at), [CAitVR](https://github.com/RTX9999ti)
 
 ## Source
-- Fusion: https://github.com/Lakatrazz/BONELAB-Fusion
+- Refusion: https://github.com/MonoIAR/refusion
+- LabFusion (original project): https://github.com/Lakatrazz/BONELAB-Fusion
 
-## Soundtrack
-You can listen to the Fusion official soundtrack here:
-
-[![Soundtrack](https://i.imgur.com/ppUtaMd.png)](https://www.youtube.com/playlist?list=PLNifPIaAecBKTMlKSBYfeW81UZgNNfYe0)
-
-## Footage
-
-[![Launch Trailer](https://i.imgur.com/9qAdvsc.png)](https://www.youtube.com/watch?v=pVavphtfTd4)
+## License
+Licensed under the GNU General Public License v3.0, with portions derived from LabFusion remaining under the MIT License. Full attributions are listed in the project README.
