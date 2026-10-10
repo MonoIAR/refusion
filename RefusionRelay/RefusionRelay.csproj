@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RefusionRelay</RootNamespace>
+    <!-- Runtime would otherwise hard-require libicu; minimal Linux containers (slim/alpine/distroless) often lack it -->
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
     <None Update="banner.txt" CopyToOutputDirectory="PreserveNewest" />
