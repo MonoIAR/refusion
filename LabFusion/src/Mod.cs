@@ -40,16 +40,16 @@ public struct FusionVersion
 {
 #if DEBUG
     public const byte VersionMajor = 0;
-    public const byte VersionMinor = 1;
+    public const byte VersionMinor = 2;
     public const short VersionPatch = 0;
 
-    public const string VersionString = "0.1.0";
+    public const string VersionString = "0.2.0";
 #else
     public const byte VersionMajor = 0;
-    public const byte VersionMinor = 1;
+    public const byte VersionMinor = 2;
     public const short VersionPatch = 0;
 
-    public const string VersionString = "0.1.0";
+    public const string VersionString = "0.2.0";
 #endif
 }
 

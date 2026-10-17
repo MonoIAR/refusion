@@ -79,6 +79,10 @@ public static class NativeMessageTag
         PointItemTrigger = 207,
         PointItemTriggerValue = 208,
 
+        // Join handshake extras
+        ConnectionProfile = 216,
+        ChunkedPayload = 217,
+
         // RPC
         RPCEvent = 209,
         RPCInt = 210,

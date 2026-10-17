@@ -66,7 +66,7 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     private const int _receivedPacketLimit = 1024;
     private const int _receivedPacketDrainBudget = 256;
     private static readonly TimeSpan _joinTimeout = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan _fusionJoinTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan _fusionJoinTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan _fusionJoinRetryInterval = TimeSpan.FromSeconds(2);
 
     public override bool CheckSupported()
@@ -203,7 +203,7 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         {
             SendRelayPacket(CreateForwardPacket("ServerBroadcast", channel, message));
         }
-        else
+        else if (CanSendGameMessage(message))
         {
             SendRelayPacket(CreateForwardPacket("ClientMessage", channel, message));
         }
@@ -211,7 +211,22 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
     public override void SendToServer(NetworkChannel channel, NetMessage message)
     {
-        SendRelayPacket(CreateForwardPacket("ClientMessage", channel, message));
+        if (CanSendGameMessage(message))
+        {
+            SendRelayPacket(CreateForwardPacket("ClientMessage", channel, message));
+        }
+    }
+
+    private unsafe bool CanSendGameMessage(NetMessage message)
+    {
+        // Until our own connection response is processed, only the join handshake may go out.
+        // Anything else carries sender id 0 and looks like spoofing to the host.
+        if (!_isConnectionActive || PlayerIDManager.LocalID != null) return true;
+        if (message.Length > 0 && message.Buffer[0] == NativeMessageTag.ConnectionRequest) return true;
+#if DEBUG
+        FusionLogger.Log("Blocked a game message while waiting for the Fusion-level join to complete.");
+#endif
+        return false;
     }
 
     public override void SendFromServer(byte userId, NetworkChannel channel, NetMessage message)
@@ -408,6 +423,9 @@ public class DedicatedServerNetworkLayer : NetworkLayer
                 try { _packet = JsonSerializer.Deserialize<RelayPacket>(_result.Buffer, _jsonOptions); }
                 catch (JsonException) { continue; }
                 if (_packet == null) continue;
+#if DEBUG
+                if (_fusionJoinDeadlineUtc != DateTime.MinValue) FusionLogger.Log($"Relay packet while joining: {_packet.Type} ({_result.Buffer.Length} bytes).");
+#endif
                 if (_receivedPackets.Count >= _receivedPacketLimit)
                 {
                     if (DateTime.UtcNow - _lastOverflowWarnUtc > TimeSpan.FromSeconds(5))
@@ -483,6 +501,9 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         {
             if (!string.IsNullOrWhiteSpace(packet.LevelBarcode))
             {
+                // Before our own connection response is processed, the level load message from the host drives the scene instead.
+                // Applying the relay scene state early would load the level twice (it resets the target flags the host's load sets)
+                if (PlayerIDManager.LocalID == null) return;
                 FusionSceneManager.SetTargetScene(packet.LevelBarcode, packet.LoadingScreenBarcode ?? string.Empty);
             }
             return;
@@ -587,9 +608,31 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             packet.SessionToken = _sessionToken;
             var _bytes = JsonSerializer.SerializeToUtf8Bytes(packet, _jsonOptions);
             _udpClient.Send(_bytes, _bytes.Length, _relayEndpoint);
+
+#if DEBUG
+            bool _inJoinWindow = _fusionJoinDeadlineUtc != DateTime.MinValue || DateTime.UtcNow - LastJoinSendUtc < TimeSpan.FromSeconds(5);
+
+            if (_inJoinWindow)
+            {
+                FusionLogger.Log($"Relay packet sent: {packet.Type}/{packet.Mode} ({_bytes.Length} bytes).");
+            }
+
+            if (_bytes.Length > OversizePacketWarnBytes && DateTime.UtcNow - _lastOversizeWarnUtc > TimeSpan.FromSeconds(5))
+            {
+                _lastOversizeWarnUtc = DateTime.UtcNow;
+                FusionLogger.Warn($"Relay packet larger than {OversizePacketWarnBytes} bytes sent: {packet.Type}/{packet.Mode} ({_bytes.Length} bytes).");
+            }
+#endif
         }
         catch (Exception _exception) { FusionLogger.LogException("sending dedicated server data", _exception); }
     }
+
+#if DEBUG
+    private const int OversizePacketWarnBytes = 1100;
+    private DateTime _lastOversizeWarnUtc = DateTime.MinValue;
+
+    internal static DateTime LastJoinSendUtc = DateTime.MinValue;
+#endif
 
     private RelayPacket CreateForwardPacket(string mode, NetworkChannel channel, NetMessage message, byte targetSmallId = 0, byte excludeSmallId = 0)
     {

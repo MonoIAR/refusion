@@ -1,13 +1,12 @@
-﻿using LabFusion.Data;
-using LabFusion.Player;
-using LabFusion.Representation;
-using LabFusion.Utilities;
-using LabFusion.Scene;
-using LabFusion.Preferences.Server;
-using LabFusion.Senders;
+using LabFusion.Data;
 using LabFusion.Entities;
 using LabFusion.Network.Serialization;
-using LabFusion.Safety;
+using LabFusion.Player;
+using LabFusion.Preferences.Server;
+using LabFusion.Representation;
+using LabFusion.Scene;
+using LabFusion.Senders;
+using LabFusion.Utilities;
 
 namespace LabFusion.Network;
 
@@ -15,12 +14,9 @@ public class ConnectionRequestData : INetSerializable
 {
     public ulong BackupPlatformID;
     public Version Version;
-    public string AvatarBarcode;
-    public SerializedAvatarStats AvatarStats;
-    public Dictionary<string, string> InitialMetadata;
-    public List<string> InitialEquippedItems;
+    public string Username;
 
-    public int? GetSize() => sizeof(ulong) + Version.GetSize() + AvatarBarcode.GetSize() + SerializedAvatarStats.Size + InitialMetadata.GetSize() + InitialEquippedItems.GetSize();
+    public int? GetSize() => sizeof(ulong) + Version.GetSize() + Username.GetSize();
 
     public bool IsValid { get; private set; } = true;
 
@@ -30,10 +26,7 @@ public class ConnectionRequestData : INetSerializable
         {
             serializer.SerializeValue(ref BackupPlatformID);
             serializer.SerializeValue(ref Version);
-            serializer.SerializeValue(ref AvatarBarcode);
-            serializer.SerializeValue(ref AvatarStats);
-            serializer.SerializeValue(ref InitialMetadata);
-            serializer.SerializeValue(ref InitialEquippedItems);
+            serializer.SerializeValue(ref Username);
         }
         catch (Exception e)
         {
@@ -43,7 +36,7 @@ public class ConnectionRequestData : INetSerializable
         }
     }
 
-    public static ConnectionRequestData Create(ulong longId, Version version, string avatarBarcode, SerializedAvatarStats stats)
+    public static ConnectionRequestData Create(ulong longId, Version version)
     {
         LocalPlayer.InvokeApplyInitialMetadata();
 
@@ -51,16 +44,15 @@ public class ConnectionRequestData : INetSerializable
         {
             BackupPlatformID = longId,
             Version = version,
-            AvatarBarcode = avatarBarcode,
-            AvatarStats = stats,
-            InitialMetadata = LocalPlayer.Metadata.Metadata.LocalDictionary,
-            InitialEquippedItems = InternalServerHelpers.GetInitialEquippedItems(),
+            Username = LocalPlayer.Username,
         };
     }
 }
 
 public class ConnectionRequestMessage : NativeMessageHandler
 {
+    private static DateTime _lastLoadingDropWarnUtc = DateTime.MinValue;
+
     public override byte Tag => NativeMessageTag.ConnectionRequest;
 
     public override ExpectedReceiverType ExpectedReceiver => ExpectedReceiverType.ServerOnly;
@@ -78,10 +70,14 @@ public class ConnectionRequestMessage : NativeMessageHandler
             return;
         }
 
-        // Make sure we aren't loading
+        // Make sure we aren't loading. The request is dropped instead of denied, so retrying clients connect as soon as loading finishes
         if (FusionSceneManager.IsLoading())
         {
-            Deny(platformID, "The server is loading a level. Please try again later.");
+            if (DateTime.UtcNow - _lastLoadingDropWarnUtc > TimeSpan.FromSeconds(5))
+            {
+                _lastLoadingDropWarnUtc = DateTime.UtcNow;
+                FusionLogger.Log($"Dropped a connection request from {platformID} while the scene is loading.");
+            }
             return;
         }
 
@@ -103,7 +99,7 @@ public class ConnectionRequestMessage : NativeMessageHandler
             if (newSmallId.HasValue && existing.SmallID == newSmallId.Value)
             {
                 FusionLogger.Warn($"Re-accepting connection request from {platformID} (small id {existing.SmallID}).");
-                ReacceptConnection(existing, platformID, data);
+                ReacceptConnection(existing, platformID);
                 return;
             }
 
@@ -166,11 +162,17 @@ public class ConnectionRequestMessage : NativeMessageHandler
             return;
         }
 
-        // Append metadata with info
-        data.InitialMetadata[nameof(PlayerMetadata.PermissionLevel)] = level.ToString();
+        // Build the initial metadata for this player
+        string username = string.IsNullOrWhiteSpace(data.Username) ? "Player" : data.Username;
+
+        var metadata = new Dictionary<string, string>()
+        {
+            [nameof(PlayerMetadata.Username)] = username,
+            [nameof(PlayerMetadata.PermissionLevel)] = level.ToString(),
+        };
 
         // Create new PlayerID
-        var playerId = new PlayerID(platformID, newSmallId.Value, data.InitialMetadata, data.InitialEquippedItems);
+        var playerId = new PlayerID(platformID, newSmallId.Value, metadata, new List<string>());
 
         // Finally, check for dynamic connection disallowing
         if (!MultiplayerHooking.CheckShouldAllowConnection(playerId, out string reason))
@@ -180,7 +182,7 @@ public class ConnectionRequestMessage : NativeMessageHandler
         }
 
         // All checks have succeeded, let the player into the server
-        OnConnectionAllowed(playerId, platformID, data);
+        OnConnectionAllowed(playerId, platformID);
     }
 
     private static void Deny(ulong platformID, string reason)
@@ -189,35 +191,51 @@ public class ConnectionRequestMessage : NativeMessageHandler
         ConnectionSender.SendConnectionDeny(platformID, reason);
     }
 
-    private static void OnConnectionAllowed(PlayerID playerID, ulong platformID, ConnectionRequestData data)
+    private static void OnConnectionAllowed(PlayerID playerID, ulong platformID)
     {
         // Reserve the player's smallID so that other players don't steal it
         PlayerIDManager.ReserveSmallID(playerID.SmallID);
 
         FusionLogger.Log($"Accepted connection from {platformID} as small id {playerID.SmallID}.");
 
-        SendJoinAndCatchup(playerID, platformID, data);
+        SendJoinAndCatchup(playerID, platformID);
     }
 
-    private static void ReacceptConnection(PlayerID playerID, ulong platformID, ConnectionRequestData data)
+    private static void ReacceptConnection(PlayerID playerID, ulong platformID)
     {
-        SendJoinAndCatchup(playerID, platformID, data);
+        SendJoinAndCatchup(playerID, platformID);
     }
 
-    private static void SendJoinAndCatchup(PlayerID playerID, ulong platformID, ConnectionRequestData data)
+    private static void SendJoinAndCatchup(PlayerID playerID, ulong platformID)
     {
+#if DEBUG
+        DedicatedServerNetworkLayer.LastJoinSendUtc = DateTime.UtcNow;
+#endif
+
         // Send the new player to all existing players (and the new player so they know they exist)
-        ConnectionSender.SendPlayerJoin(playerID, data.AvatarBarcode, data.AvatarStats);
+        ConnectionSender.SendPlayerJoin(playerID);
 
-        // Now we send all of our other players to the new player
+        var others = new List<PlayerID>();
+
         foreach (var id in PlayerIDManager.PlayerIDs)
         {
-            // Don't resend the new player to themselves
             if (id.SmallID == playerID.SmallID)
             {
                 continue;
             }
 
+            others.Add(id);
+        }
+
+        // Send the other players to the new player
+        foreach (var id in others)
+        {
+            ConnectionSender.SendPlayerCatchup(platformID, id);
+        }
+
+        // Send the other players' avatars to the new player
+        foreach (var id in others)
+        {
             string barcode;
             SerializedAvatarStats stats;
 
@@ -236,24 +254,68 @@ public class ConnectionRequestMessage : NativeMessageHandler
                 continue;
             }
 
-            ConnectionSender.SendPlayerCatchup(platformID, id, barcode, stats);
+            ConnectionSender.SendPlayerAvatarTo(playerID.SmallID, platformID, id, barcode, stats);
+        }
+
+        // Send the other players' full profiles to the new player
+        foreach (var id in others)
+        {
+            ConnectionSender.SendPlayerProfileTo(playerID.SmallID, platformID, id);
         }
 
         // Now, make sure the player loads into the scene
         LoadSender.SendLevelLoad(FusionSceneManager.Barcode, FusionSceneManager.LoadBarcode, platformID);
 
-        // Send the dynamics list
-        var assignData = DynamicsAssignData.Create();
-
-        using (var writer = NetWriter.Create(assignData.GetSize()))
-        {
-            assignData.Serialize(writer);
-
-            using var message = NetMessage.Create(NativeMessageTag.DynamicsAssignment, writer, CommonMessageRoutes.None);
-            MessageSender.SendFromServer(platformID, NetworkChannel.Reliable, message);
-        }
+        // Send the dynamics list, chunked to stay under the datagram limit
+        SendDynamicsAssignment(platformID);
 
         // Send the active server settings
         LobbyInfoManager.SendLobbyInfo(platformID);
+    }
+
+    private static byte _dynamicsTransferId = 0;
+
+    private const int DynamicsChunkSize = 640;
+
+    private static void SendDynamicsAssignment(ulong platformID)
+    {
+        var assignData = DynamicsAssignData.Create();
+
+        byte[] payload;
+        using (var writer = NetWriter.Create(assignData.GetSize()))
+        {
+            assignData.Serialize(writer);
+            payload = writer.Buffer.ToArray();
+        }
+
+        int chunkCount = System.Math.Max(1, (payload.Length + DynamicsChunkSize - 1) / DynamicsChunkSize);
+
+        _dynamicsTransferId++;
+
+        for (ushort i = 0; i < chunkCount; i++)
+        {
+            int offset = i * DynamicsChunkSize;
+            int length = System.Math.Min(DynamicsChunkSize, payload.Length - offset);
+
+            var chunkData = new ChunkedPayloadData()
+            {
+                InnerTag = NativeMessageTag.DynamicsAssignment,
+                TransferId = _dynamicsTransferId,
+                ChunkIndex = i,
+                ChunkCount = (ushort)chunkCount,
+                TotalLength = payload.Length,
+                Payload = payload[offset..(offset + length)],
+            };
+
+            using var chunkWriter = NetWriter.Create(chunkData.GetSize());
+            chunkData.Serialize(chunkWriter);
+
+            using var message = NetMessage.Create(NativeMessageTag.ChunkedPayload, chunkWriter, CommonMessageRoutes.None);
+            MessageSender.SendFromServer(platformID, NetworkChannel.Reliable, message);
+
+#if DEBUG
+            FusionLogger.Log($"Sent dynamics chunk {i + 1}/{chunkCount} to {platformID} ({message.Length} bytes).");
+#endif
+        }
     }
 }

@@ -60,6 +60,7 @@ internal sealed class RelayServer
     private string _settingsJson = string.Empty;
     private string _motd = string.Empty;
     private bool _isLoading;
+    private DateTime _loadingSinceUtc = DateTime.MinValue;
 
     public static int ResolvePort(string[] args)
     {
@@ -432,21 +433,32 @@ internal sealed class RelayServer
     {
         if (!string.Equals(message.ServerVersion, _serverVersion, StringComparison.Ordinal) || message.ProtocolVersion != _protocolVersion)
         {
+            LogRateLimited("reject-version", "WARN", $"Rejected a connection from {endpoint}: version mismatch (client {message.ServerVersion} protocol {message.ProtocolVersion}).");
             await SendAsync(endpoint, new RelayPacket { Type = "Reject", Reason = "version_mismatch", ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion });
             return;
         }
+        // The loading flag is set by the owner's single-shot packets, so a lost "loading finished" would block every join silently
+        if (_isLoading && (_ownerClientId is null || DateTime.UtcNow - _loadingSinceUtc > TimeSpan.FromMinutes(5)))
+        {
+            Log("WARN", "Cleared a stale loading state (no owner or expired).");
+            _isLoading = false;
+            _loadingSinceUtc = DateTime.MinValue;
+        }
         if (_isLoading)
         {
+            LogRateLimited("reject-loading", "WARN", $"Rejected a connection from {endpoint}: the server is loading a level.");
             await SendAsync(endpoint, new RelayPacket { Type = "Reject", Reason = "The server is loading a level. Please try again later.", ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion, ServerId = _serverId, AnticheatEnabled = _settings.AnticheatEnabled });
             return;
         }
         if (_clients.Count >= _settings.MaxPlayers)
         {
+            LogRateLimited("reject-full", "WARN", $"Rejected a connection from {endpoint}: the server is full.");
             await SendAsync(endpoint, new RelayPacket { Type = "Reject", Reason = "The server is full.", ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion });
             return;
         }
         if (!Guid.TryParse(message.PersistentPlayerId, out var _persistentPlayerId))
         {
+            LogRateLimited("reject-uuid", "WARN", $"Rejected a connection from {endpoint}: invalid persistent player id.");
             await SendAsync(endpoint, new RelayPacket { Type = "Reject", Reason = "invalid_persistent_player_id", ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion });
             return;
         }
@@ -486,7 +498,12 @@ internal sealed class RelayServer
                 var _isOwner = _ownerClientId is null;
                 _client = new RelayClient(_clientId, GetSmallId(_isOwner), endpoint, GetSanitizedText(message.Name, 32, $"Player{_clientId}"), GetPlatformId(_playerId), _playerId);
                 _clients[_client.ClientId] = _client;
-                if (_isOwner) _ownerClientId = _client.ClientId;
+                if (_isOwner)
+                {
+                    _ownerClientId = _client.ClientId;
+                    _isLoading = false;
+                    _loadingSinceUtc = DateTime.MinValue;
+                }
                 _created = true;
             }
         }
@@ -520,7 +537,9 @@ internal sealed class RelayServer
         if (client.ClientId == _ownerClientId && string.Equals(message.Mode, "ServerLoadingState", StringComparison.OrdinalIgnoreCase))
         {
             _isLoading = message.IsLoading;
+            _loadingSinceUtc = _isLoading ? DateTime.UtcNow : DateTime.MinValue;
             SaveState();
+            Log("INFO", $"Loading state: {_isLoading}");
             await BroadcastAllAsync(CreateStatePacket("LoadingState", client));
             return;
         }
@@ -884,6 +903,7 @@ internal sealed class RelayServer
     private async Task ResetSessionAsync(RelayClient owner, byte previousSmallId)
     {
         _isLoading = false;
+        _loadingSinceUtc = DateTime.MinValue;
         await BroadcastAllAsync(new RelayPacket { Type = "SessionReset", ClientId = owner.ClientId, SmallId = previousSmallId, OwnerClientId = 0, SessionResetRequired = true });
         foreach (var _client in _clients.Values.ToList()) _clients.TryRemove(_client.ClientId, out _);
     }

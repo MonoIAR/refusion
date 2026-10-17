@@ -69,7 +69,13 @@ public abstract class NativeMessageHandler : MessageHandler
             // Prevent ID spoofing
             if (isServerHandled && !ValidateReceivedID(route.Type, ref sender, ref platformID))
             {
-                NetworkConnectionManager.DisconnectUser(platformID.Value);
+                // A half-joined client (its own connection response not processed yet) sends with sender id 0.
+                // Dropping the message is enough; kicking turns any lost join response into a permanent kick loop.
+                if (DateTime.UtcNow - _lastValidationWarnUtc > TimeSpan.FromSeconds(5))
+                {
+                    _lastValidationWarnUtc = DateTime.UtcNow;
+                    FusionLogger.Warn($"Dropped a relay message with a mismatched sender id from platform {platformID}.");
+                }
                 return;
             }
 
@@ -219,6 +225,8 @@ public abstract class NativeMessageHandler : MessageHandler
 
         OnHandleMessage(received);
     }
+
+    private static DateTime _lastValidationWarnUtc = DateTime.MinValue;
 
     public static readonly NativeMessageHandler[] Handlers = new NativeMessageHandler[byte.MaxValue];
 }

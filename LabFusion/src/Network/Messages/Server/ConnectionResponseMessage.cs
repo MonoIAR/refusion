@@ -1,34 +1,30 @@
-﻿using LabFusion.Data;
+using LabFusion.Data;
 using LabFusion.Entities;
 using LabFusion.Network.Serialization;
 using LabFusion.Player;
+using LabFusion.Senders;
+using LabFusion.Utilities;
 
 namespace LabFusion.Network;
 
 public class ConnectionResponseData : INetSerializable
 {
     public PlayerID PlayerID = null;
-    public string AvatarBarcode = null;
-    public SerializedAvatarStats AvatarStats = null;
     public bool IsInitialJoin = false;
 
-    public int? GetSize() => PlayerID.GetSize() + AvatarBarcode.GetSize() + SerializedAvatarStats.Size + sizeof(bool);
+    public int? GetSize() => PlayerID.GetSize() + sizeof(bool);
 
     public void Serialize(INetSerializer serializer)
     {
         serializer.SerializeValue(ref PlayerID);
-        serializer.SerializeValue(ref AvatarBarcode);
-        serializer.SerializeValue(ref AvatarStats);
         serializer.SerializeValue(ref IsInitialJoin);
     }
 
-    public static ConnectionResponseData Create(PlayerID id, string avatarBarcode, SerializedAvatarStats stats, bool isInitialJoin)
+    public static ConnectionResponseData Create(PlayerID id, bool isInitialJoin)
     {
         return new ConnectionResponseData()
         {
             PlayerID = id,
-            AvatarBarcode = avatarBarcode,
-            AvatarStats = stats,
             IsInitialJoin = isInitialJoin,
         };
     }
@@ -47,6 +43,10 @@ public class ConnectionResponseMessage : NativeMessageHandler
         bool isMine = data.PlayerID.PlatformID == PlayerIDManager.LocalPlatformID;
 
         var existing = PlayerIDManager.GetPlayerID(data.PlayerID.PlatformID);
+
+#if DEBUG
+        FusionLogger.Log($"Received connection response for {data.PlayerID.PlatformID}, small id {data.PlayerID.SmallID}, mine: {isMine}, existing: {(existing != null ? existing.SmallID.ToString() : "none")}.");
+#endif
 
         // Duplicated responses (re-sent joins, host broadcast loopback) must not rebuild existing players
         if (existing != null && existing.SmallID == data.PlayerID.SmallID)
@@ -70,8 +70,7 @@ public class ConnectionResponseMessage : NativeMessageHandler
 
                 InternalServerHelpers.OnPlayerJoined(existing, data.IsInitialJoin);
 
-                var missingPlayer = NetworkPlayerManager.CreateNetworkPlayer(existing);
-                missingPlayer.AvatarSetter.SwapAvatar(data.AvatarStats, data.AvatarBarcode);
+                NetworkPlayerManager.CreateNetworkPlayer(existing);
 
                 if (NetworkInfo.IsHost)
                 {
@@ -100,14 +99,17 @@ public class ConnectionResponseMessage : NativeMessageHandler
             NetworkPlayerManager.CreateLocalPlayer();
 
             InternalServerHelpers.OnJoinServer();
+
+            // Our uplink is now open: broadcast our profile and avatar so the host can relay them to everyone
+            ConnectionSender.SendClientProfile();
+            PlayerSender.SendPlayerAvatar(RigData.RigAvatarStats, RigData.GetAvatarBarcode());
         }
         // Otherwise, create a network player
         else
         {
             InternalServerHelpers.OnPlayerJoined(data.PlayerID, data.IsInitialJoin);
 
-            var networkPlayer = NetworkPlayerManager.CreateNetworkPlayer(data.PlayerID);
-            networkPlayer.AvatarSetter.SwapAvatar(data.AvatarStats, data.AvatarBarcode);
+            NetworkPlayerManager.CreateNetworkPlayer(data.PlayerID);
         }
 
         // Send catchup messages now that the user is registered

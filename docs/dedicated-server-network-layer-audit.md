@@ -616,3 +616,46 @@ Known limitations (accepted for now):
 - While the host is loading a level, a re-accept request is denied like a fresh join, and the retrying client disconnects with "The server is loading a level." (same behavior as a first-time join today).
 - A client that joins while the host stays in the main menu may keep a rep without a bound rig (no pose output) until a level is loaded. This existed before; the fix only prevents the crash.
 - Re-accepts are only safe between same-version clients: old clients would rebuild the player on the duplicate broadcast, and an old host would still deny the second request with "already in it". Ship host and clients together.
+
+### Half-Joined Client Protection (2026-10-11)
+
+A live three-player test exposed a "the server only holds one player" symptom. Relay and host logs showed the chain: a joiner whose self `ConnectionResponse` never arrived stayed half-joined with `LocalSmallID == 0`; any ordinary game message it then sent failed the host's `ValidateReceivedID` (registered small id != sender 0), and the host responded by force-disconnecting the client (`DisconnectUser`), which the relay logged as `Player kicked: ... Kicked from server.`. Every half-join therefore ended in an automatic kick and a rejoin loop. The same test also showed the join broadcast (~1.3-1.8KB, size depends on the player's metadata/avatar/equipped items) failing to reach every joiner while sub-1KB messages arrived — the fragment-dropping path class in the earlier FAIXI analysis, still to be confirmed with a fragmented-ping test and the new traces. Changes:
+
+- **Validation mismatches no longer kick.** `NativeMessageHandler` drops the offending message and logs a rate-limited warning instead of calling `DisconnectUser`. Spoof protection is unchanged (the message never reaches a handler); the kick turned any lost join response into a permanent kick loop.
+- **No gameplay traffic while half-joined.** The relay layer's `SendToServer`/`BroadcastMessage` block every message except `ConnectionRequest` (tag peek) until our own `ConnectionResponse` is processed (`PlayerIDManager.LocalID != null`). A not-yet-joined client can no longer emit sender-id-0 messages that look like spoofing.
+- **Relay scene state no longer pre-loads the level before the join completes.** The relay sends `SceneState` at Welcome, and the host's accept-time `LevelLoad` arrives moments later; both reset the scene target flags, so the level loaded twice on every join (first load, then immediately a second one when the accept's message re-triggered the auto-loader). Half-joined clients now ignore the relay `SceneState`; the host's `LevelLoad` is the single driver, matching the audit principle that player creation precedes scene data.
+- **Join diagnostics (DEBUG).** While the Fusion-level join is pending, every relay packet received is logged with its type and size, and `ConnectionResponseMessage` logs each response with its platform id, small id, "mine" flag, and any existing entry — enough to see at a glance whether the join broadcast reaches the client at all.
+- **Loading no longer kills join attempts.** The host dropped its "The server is loading a level" deny: requests arriving while a scene is loading are dropped silently (rate-limited log) so the retrying client connects as soon as loading finishes; the client's Fusion-join timeout moved from 20s to 30s to cover the host's start-up scene reload.
+- **Stale loading state self-heals (relay).** The relay's `_isLoading` gate could stick forever when the owner's single-shot "loading finished" packet was lost, silently rejecting every Hello (no log) — the observed "host is loading" error on joiners while the host was idle. The flag now clears when there is no owner, on owner change, on session reset, and after a 5-minute expiry; every Hello rejection (version, loading, full, uuid) is now logged rate-limited, and loading transitions are logged as `Loading state: True/False`.
+- Still open: shrinking the join handshake below the fragmentation threshold by splitting `SerializedAvatarStats` into the existing `PlayerRepAvatar` message, and the audit-doc transport framing work.
+
+### Join Handshake Slimming (2026-10-11)
+
+The follow-up to the section above. Root cause recap: the join handshake messages carried `SerializedAvatarStats` (a fixed 420-byte block), the full metadata dictionary, and the equipped-items list inside `ConnectionRequest`/`ConnectionResponse`, pushing those UDP datagrams to ~1.35-1.9KB. Anything over ~1472 bytes gets IP-fragmented, and some network paths drop fragments asymmetrically, so the joiner never received its own `ConnectionResponse` and stayed half-joined. Every join-critical message is now kept under the ~1.1KB datagram band. Delivery path is client-to-relay protocol only; the relay server itself is unchanged.
+
+Message set (raw size is the serialized message; datagram ≈ 130B RelayPacket JSON header + 1.34 × raw for base64):
+
+| Message | Before | After (raw) | After (datagram) |
+| --- | --- | --- | --- |
+| `ConnectionRequest` (tag 1) | ~1.0-1.9KB | ~40-90B | ~0.2KB |
+| `ConnectionResponse` (tag 2, initial join + each catchup) | ~1.35-1.9KB | ~95-135B | ~0.3KB |
+| `PlayerRepAvatar` (tag 5, reused for join) | n/a | ~475-510B | ~0.8KB |
+| `ConnectionProfile` (new, tag 216) | n/a | ~100-400B | ~0.25-0.65KB |
+| `ChunkedPayload` (new, tag 217, per chunk) | n/a | ~660B | ~1.0KB |
+| `LevelLoad` / `Disconnect` (deny) | ~0.3KB | unchanged | ~0.3KB |
+
+New join sequence:
+
+1. Joiner sends a slim `ConnectionRequest` `{BackupPlatformID, Version, Username}`.
+2. Host accepts and broadcasts a slim `ConnectionResponse` `{PlayerID snapshot, IsInitialJoin}` where the snapshot carries only `Username` + host-authoritative `PermissionLevel` (no avatar data). The joiner processes its own response (`ApplyLocalID` → `CreateLocalPlayer` → `OnJoinServer`); other clients create the rep without an avatar (calibration-avatar fallback, verified safe).
+3. Host sends the joiner, addressed per player: slim catchup responses, `PlayerRepAvatar` copies (sender = avatar owner), and `ConnectionProfile` (sender = owner).
+4. After `OnJoinServer` opens the client's uplink, the joiner broadcasts its own `PlayerRepAvatar` (RigData) and `ConnectionProfile` (full metadata + equipped items, tag 216) via `ReliableToOtherClients`; the host relays them to everyone. The profile handler only ever modifies the `PlayerID` matching the transport-verified sender, skips the `PermissionLevel` key (host snapshot stays authoritative), and `ForceSetEquipped` re-renders late-arriving cosmetics.
+5. Host → joiner: `LevelLoad`, then the `DynamicsAssignment` payload inside `ChunkedPayload` (tag 217), then `LobbyInfo`.
+
+Chunking protocol (`ChunkedPayloadMessage`): the inner payload is split into ≤640-byte chunks, at most 64 per transfer (~40KB cap). Each chunk carries `{InnerTag, TransferId, ChunkIndex, ChunkCount, TotalLength, Payload}`, so any first chunk can start the buffer and a lost chunk 0 cannot corrupt assembly. Chunk 0 of a new transfer supersedes a stale buffer (host re-accepts always resend with a fresh transfer id); chunks from a different transfer id are dropped; incomplete buffers expire after 10 seconds. On completion the reassembled bytes are dispatched through the normal handler table with a `None` route (the only whitelisted inner tag today is `DynamicsAssignment`). The receiver accepts chunks only from the host, and only on clients. Dynamics assignment is always chunked, even when it fits one chunk, so there is a single receive path.
+
+Version: `FusionVersion` bumped 0.1.0 → 0.2.0. The strict Major.Minor version gate cleanly denies mixed-version joins instead of silently mis-parsing the slimmed messages.
+
+Correction: `DynamicsAssignData` carries **gamemode metadata** (`GamemodeRegistration.GetExistingMetadata()`, a string dictionary per gamemode barcode) — not a scene entity list, as an earlier note suggested. Per-entity catchup/spawn traffic (`EntityDataRequest`, `NetworkPropCreate`, large `ModInfoResponse`s) can still exceed the MTU in busy scenes; that remains in scope for the terminal binary framing work, not this change.
+
+Accepted degradations: a lost profile/avatar broadcast after joining shows a fallback name or calibration avatar until the player re-equips or rejoins (no retry); a stale rep that missed every response broadcast stays avatar-less (same loss level as before this change).
