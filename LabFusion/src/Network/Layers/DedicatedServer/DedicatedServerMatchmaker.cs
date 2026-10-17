@@ -1,3 +1,4 @@
+using Refusion.Transport;
 using System.Collections;
 using System.Net;
 using System.Net.Sockets;
@@ -43,15 +44,11 @@ public sealed class DedicatedServerMatchmaker : IMatchmaker
     private static DedicatedServerInfo? Query(string address)
     {
         if (!TryParseAddress(address, out var _endpoint)) return null;
-        using var _udp = new UdpClient();
-        _udp.Client.ReceiveTimeout = 1500;
-        var _request = JsonSerializer.SerializeToUtf8Bytes(new RelayPacket { Type = "Query" }, _jsonOptions);
         try
         {
-            _udp.Send(_request, _request.Length, _endpoint);
-            var _remote = new IPEndPoint(IPAddress.Any, 0);
-            var _response = _udp.Receive(ref _remote);
-            return JsonSerializer.Deserialize<DedicatedServerInfo>(Encoding.UTF8.GetString(_response), _jsonOptions);
+            var _response = RelayTransport.GetQueryAsync(_endpoint, TimeSpan.FromMilliseconds(1500)).GetAwaiter().GetResult();
+            if (_response.ProtocolVersion != WireProtocol.Version) return null;
+            return JsonSerializer.Deserialize<DedicatedServerInfo>(JsonSerializer.Serialize(_response, _jsonOptions), _jsonOptions);
         }
         catch (Exception _exception)
         {

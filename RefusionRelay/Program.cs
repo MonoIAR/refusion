@@ -1,3 +1,4 @@
+using Refusion.Transport;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
@@ -32,8 +33,8 @@ internal static class Program
 
 internal sealed class RelayServer
 {
-    private const string _serverVersion = "0.1.0";
-    private const int _protocolVersion = 2;
+    private const string _serverVersion = ProductVersion.Value;
+    private const int _protocolVersion = WireProtocol.Version;
     private const string _settingsFileName = "refusion-server-settings.json";
     private static readonly TimeSpan _clientTimeout = TimeSpan.FromSeconds(15);
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
@@ -41,7 +42,9 @@ internal sealed class RelayServer
     private readonly string _stateFilePath = Path.Combine(AppContext.BaseDirectory, "refusion-server-state.json");
     private readonly string _settingsFilePath = Path.Combine(AppContext.BaseDirectory, _settingsFileName);
     private readonly string _accessFilePath = Path.Combine(AppContext.BaseDirectory, "refusion-server-access.json");
-    private readonly UdpClient _socket;
+    private readonly RelayTransport _transport;
+    private Guid _sessionEpoch = Guid.NewGuid();
+    private uint _sceneEpoch;
     private readonly ConcurrentDictionary<int, RelayClient> _clients = new();
     private readonly object _gate = new();
     private readonly object _logGate = new();
@@ -83,12 +86,7 @@ internal sealed class RelayServer
 
     public RelayServer(int port)
     {
-        _socket = new UdpClient(new IPEndPoint(IPAddress.Any, port));
-        if (OperatingSystem.IsWindows())
-        {
-            // SIO_UDP_CONNRESET: an ICMP port-unreachable must not abort pending receives on Windows.
-            try { _socket.Client.IOControl(unchecked((int)0x9800000C), new byte[4], null); } catch { }
-        }
+        _transport = new RelayTransport(port, true);
         _settings = LoadSettings();
         _accessList = LoadAccessList();
         var _state = LoadState();
@@ -107,7 +105,7 @@ internal sealed class RelayServer
         Log("INFO", $"Version: {_serverVersion}");
         Log("INFO", $"Protocol: {_protocolVersion}");
         Log("INFO", $"Server ID: {_serverId}");
-        Log("INFO", $"Listening: {_socket.Client.LocalEndPoint}");
+        Log("INFO", $"Listening: {_transport.Port}");
         Log("INFO", $"Log file: {GetLogPath()}");
         Log("INFO", $"State file: {_stateFilePath}");
         Log("INFO", $"Settings file: {_settingsFilePath}");
@@ -139,16 +137,7 @@ internal sealed class RelayServer
         {
             while (!_stopSource.IsCancellationRequested)
             {
-                UdpReceiveResult _packet;
-                try { _packet = await _socket.ReceiveAsync(_stopSource.Token); }
-                catch (OperationCanceledException) { break; }
-                catch (ObjectDisposedException) { break; }
-                catch (SocketException _exception)
-                {
-                    if (_stopSource.IsCancellationRequested) break;
-                    LogRateLimited("receive", "WARN", $"Receive failed: {_exception.SocketErrorCode}");
-                    continue;
-                }
+                if (!_transport.GetTryReceive(out var _packet)) { await Task.Delay(2, _stopSource.Token); continue; }
                 try { await HandlePacketAsync(_packet); }
                 catch (Exception _exception) { Log("ERROR", $"Packet handling failed: {_exception}"); }
             }
@@ -163,7 +152,7 @@ internal sealed class RelayServer
             {
                 try { await _consoleTask; } catch (OperationCanceledException) { } catch (Exception _exception) { Log("ERROR", $"Console task failed: {_exception.Message}"); }
             }
-            _socket.Dispose();
+            _transport.Dispose();
         }
     }
 
@@ -313,7 +302,7 @@ internal sealed class RelayServer
                 Version = _serverVersion,
                 Protocol = _protocolVersion,
                 UptimeSeconds = (int)(DateTime.UtcNow - _startUtc).TotalSeconds,
-                Port = _socket.Client.LocalEndPoint is IPEndPoint _localEndPoint ? _localEndPoint.Port : 0,
+                Port = _transport.Port,
                 PlayerCount = _clients.Count,
                 MaxPlayers = _settings.MaxPlayers,
                 LevelBarcode = _levelBarcode,
@@ -325,8 +314,13 @@ internal sealed class RelayServer
                 GamemodeTitle = _settings.GamemodeTitle,
                 GamemodeBarcode = _settings.GamemodeBarcode,
             },
+            Transport = new { SessionEpoch = _sessionEpoch, SceneEpoch = _sceneEpoch, ReliableBytes = _transport.GetPendingBytes(), Coalesced = _transport.Coalesced, ExpiredRealtime = _transport.Expired, ProtocolRejected = _transport.Rejected, PacketLoss = _transport.GetPacketLoss() },
             Players = _clients.Values.OrderBy(_value => _value.SmallId).Select(_value => new
             {
+                JoinStage = _value.JoinStage,
+                CatchupId = _value.CatchupId,
+                MissingCount = _value.MissingCount,
+                ReliableBytes = _transport.GetReliableBytes(_value.EndPoint),
                 ClientId = _value.ClientId,
                 SmallId = _value.SmallId,
                 Name = _value.Name,
@@ -357,40 +351,47 @@ internal sealed class RelayServer
         _stopSource.Cancel();
     }
 
-    private async Task HandlePacketAsync(UdpReceiveResult packet)
+    private async Task HandlePacketAsync(InboundPacket packet)
     {
-        RelayPacket? _message;
-        try { _message = JsonSerializer.Deserialize<RelayPacket>(packet.Buffer, _jsonOptions); }
-        catch (JsonException) { Console.WriteLine("Received malformed JSON packet."); return; }
-        if (_message is null || string.IsNullOrWhiteSpace(_message.Type)) return;
-
+        var _message = packet.Packet;
+        if (packet.Local)
+        {
+            var _closed = _clients.Values.FirstOrDefault(_entry => _entry.EndPoint.Equals(packet.Endpoint));
+            if (_closed != null) { Log("INFO", $"Transport closed: {_closed.Name}: {_message.Reason}"); await RemoveClientAsync(_closed, true); }
+            return;
+        }
+        if (packet.Unconnected && _message.Type != "Query") return;
+        if (_message.Type == "TransportClosed") return;
         if (_message.Type.Equals("Hello", StringComparison.OrdinalIgnoreCase))
         {
-            await HandleHelloAsync(packet.RemoteEndPoint, _message);
+            await HandleHelloAsync(packet.Endpoint, _message);
             return;
         }
 
         if (_message.Type.Equals("Query", StringComparison.OrdinalIgnoreCase))
         {
-            await SendAsync(packet.RemoteEndPoint, CreateQueryPacket());
+            await SendAsync(packet.Endpoint, CreateQueryPacket());
             return;
         }
 
-        if (!_clients.TryGetValue(_message.ClientId, out var _client) || !_client.EndPoint.Equals(packet.RemoteEndPoint))
+        if (!_clients.TryGetValue(_message.ClientId, out var _client) || !_client.EndPoint.Equals(packet.Endpoint))
         {
-            await SendAsync(packet.RemoteEndPoint, new RelayPacket { Type = "Reject", Reason = "invalid_client" });
+            await SendAsync(packet.Endpoint, new RelayPacket { Type = "Reject", Reason = "invalid_client" });
             return;
         }
         if (!string.Equals(_message.SessionToken, _client.SessionToken, StringComparison.Ordinal))
         {
-            LogRateLimited("token", "WARN", $"Dropped a packet with an invalid session token from {packet.RemoteEndPoint}");
+            LogRateLimited("token", "WARN", $"Dropped a packet with an invalid session token from {packet.Endpoint}");
             return;
         }
 
         _client.LastSeenUtc = DateTime.UtcNow;
-        if (!_client.TryConsumePacketBudget())
+        if (_message.SessionEpoch != _sessionEpoch) return;
+        if (_message.Type == "JoinState")
         {
-            LogRateLimited($"budget:{_client.ClientId}", "WARN", $"Rate limit exceeded by {_client.Name} ({_client.PersistentPlayerId})");
+            _client.JoinStage = _message.JoinStage;
+            _client.MissingCount = _message.MissingCount;
+            _client.CatchupId = _message.CatchupId;
             return;
         }
         if (_message.Type.Equals("Ping", StringComparison.OrdinalIgnoreCase))
@@ -444,12 +445,6 @@ internal sealed class RelayServer
             _isLoading = false;
             _loadingSinceUtc = DateTime.MinValue;
         }
-        if (_isLoading)
-        {
-            LogRateLimited("reject-loading", "WARN", $"Rejected a connection from {endpoint}: the server is loading a level.");
-            await SendAsync(endpoint, new RelayPacket { Type = "Reject", Reason = "The server is loading a level. Please try again later.", ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion, ServerId = _serverId, AnticheatEnabled = _settings.AnticheatEnabled });
-            return;
-        }
         if (_clients.Count >= _settings.MaxPlayers)
         {
             LogRateLimited("reject-full", "WARN", $"Rejected a connection from {endpoint}: the server is full.");
@@ -501,6 +496,8 @@ internal sealed class RelayServer
                 if (_isOwner)
                 {
                     _ownerClientId = _client.ClientId;
+                    _sessionEpoch = Guid.NewGuid();
+                    _sceneEpoch = 0;
                     _isLoading = false;
                     _loadingSinceUtc = DateTime.MinValue;
                 }
@@ -514,7 +511,7 @@ internal sealed class RelayServer
             return;
         }
 
-        await SendAsync(endpoint, new RelayPacket { Type = "Welcome", ClientId = _client.ClientId, SmallId = _client.SmallId, OwnerClientId = _ownerClientId ?? 0, ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion, Name = _client.Name, PlatformId = _client.PlatformId, PersistentPlayerId = _client.PersistentPlayerId, IsOperator = IsOperator(_client.PersistentPlayerId), SessionToken = _client.SessionToken });
+        await SendAsync(endpoint, new RelayPacket { Type = "Welcome", ClientId = _client.ClientId, SmallId = _client.SmallId, OwnerClientId = _ownerClientId ?? 0, ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion, Name = _client.Name, PlatformId = _client.PlatformId, PersistentPlayerId = _client.PersistentPlayerId, IsOperator = IsOperator(_client.PersistentPlayerId), SessionToken = _client.SessionToken, IsLoading = _isLoading, ClientBytesPerSecond = _settings.ClientBytesPerSecond, HostBytesPerSecond = _settings.HostBytesPerSecond });
         if (_created) Log("INFO", $"Player joined: {_client.Name}, id={_client.SmallId}, uuid={_client.PersistentPlayerId}, endpoint={endpoint}");
         if (!string.IsNullOrWhiteSpace(_levelBarcode)) await SendAsync(endpoint, CreateStatePacket("SceneState", _client));
         if (!string.IsNullOrWhiteSpace(_settingsJson)) await SendAsync(endpoint, new RelayPacket { Type = "SettingsState", SettingsJson = _settingsJson });
@@ -527,6 +524,8 @@ internal sealed class RelayServer
         if (client.ClientId == _ownerClientId && string.Equals(message.Mode, "ServerSceneState", StringComparison.OrdinalIgnoreCase))
         {
             if (string.IsNullOrWhiteSpace(message.LevelBarcode)) return;
+            if (message.SceneEpoch < _sceneEpoch) return;
+            _sceneEpoch = message.SceneEpoch;
             _levelBarcode = message.LevelBarcode;
             _loadingScreenBarcode = message.LoadingScreenBarcode ?? string.Empty;
             SaveState();
@@ -536,6 +535,8 @@ internal sealed class RelayServer
 
         if (client.ClientId == _ownerClientId && string.Equals(message.Mode, "ServerLoadingState", StringComparison.OrdinalIgnoreCase))
         {
+            if (message.SceneEpoch < _sceneEpoch) return;
+            _sceneEpoch = message.SceneEpoch;
             _isLoading = message.IsLoading;
             _loadingSinceUtc = _isLoading ? DateTime.UtcNow : DateTime.MinValue;
             SaveState();
@@ -553,30 +554,38 @@ internal sealed class RelayServer
             return;
         }
 
-        var _packet = new RelayPacket { Type = "RawForward", ClientId = client.ClientId, SmallId = client.SmallId, Payload = message.Payload, Channel = message.Channel, IsServerHandled = false, PlatformId = client.PlatformId };
+        if (!FusionEnvelope.GetTryParse(message.Payload, out var _prefix)) { LogRateLimited("invalid-prefix", "WARN", "Rejected invalid Fusion prefix."); return; }
+        if (_prefix.Route != 0 && _prefix.Channel != message.Channel) return;
+        if (client.ClientId != _ownerClientId && ((_prefix.Route == 0 && _prefix.Tag != 1) || (_prefix.Route != 0 && _prefix.Sender != client.SmallId) || message.Mode != "ClientMessage")) return;
+        if (client.ClientId == _ownerClientId && _prefix.Tag == 12 && message.SceneEpoch >= _sceneEpoch) _sceneEpoch = message.SceneEpoch;
+        if (!FusionEnvelope.GetIsSessionMessage(_prefix.Tag) && message.SceneEpoch != _sceneEpoch) return;
+        message.ClientId = client.ClientId;
+        message.SmallId = client.SmallId;
+        message.PlatformId = client.PlatformId;
+        message.SessionEpoch = _sessionEpoch;
+        message.SessionToken = null;
+        message.IsOperator = IsOperator(client.PersistentPlayerId);
         if (client.ClientId == _ownerClientId)
         {
-            if (string.Equals(message.Mode, "ServerBroadcast", StringComparison.OrdinalIgnoreCase))
+            message.Type = "ClientMessage";
+            message.IsServerHandled = false;
+            if (message.Mode == "ServerBroadcast" || message.Mode == "ServerBroadcastExcept")
             {
-                _packet.Type = "ClientMessage";
-                _packet.IsServerHandled = false;
-                // The pseudo-host must receive its own broadcasts; upstream hosts got them through a self-connection.
-                await BroadcastAllAsync(_packet);
-                return;
+                foreach (var _target in _clients.Values)
+                {
+                    if (_target.ClientId == client.ClientId || (message.Mode == "ServerBroadcastExcept" && _target.SmallId == message.ExcludeSmallId)) continue;
+                    await SendAsync(_target.EndPoint, message);
+                }
             }
-            if (string.Equals(message.Mode, "ServerTarget", StringComparison.OrdinalIgnoreCase))
-            {
-                await SendToSmallIdAsync(message.TargetSmallId, new RelayPacket { Type = "ClientMessage", ClientId = client.ClientId, SmallId = client.SmallId, Payload = message.Payload, Channel = message.Channel, IsServerHandled = false, PlatformId = client.PlatformId });
-                return;
-            }
-            if (string.Equals(message.Mode, "ServerBroadcastExcept", StringComparison.OrdinalIgnoreCase))
-            {
-                await BroadcastExceptSmallIdAsync(message.ExcludeSmallId, new RelayPacket { Type = "ClientMessage", ClientId = client.ClientId, SmallId = client.SmallId, Payload = message.Payload, Channel = message.Channel, IsServerHandled = false, PlatformId = client.PlatformId });
-                return;
-            }
+            else if (message.Mode == "ServerTarget" && message.TargetSmallId != 0) await SendToSmallIdAsync(message.TargetSmallId, message);
             return;
         }
-        if (_ownerClientId is int _ownerId && _clients.TryGetValue(_ownerId, out var _owner)) await SendAsync(_owner.EndPoint, new RelayPacket { Type = "ServerMessage", ClientId = client.ClientId, SmallId = client.SmallId, Payload = message.Payload, Channel = message.Channel, IsServerHandled = true, PlatformId = client.PlatformId, IsOperator = IsOperator(client.PersistentPlayerId) });
+        if (_ownerClientId is int _ownerId && _clients.TryGetValue(_ownerId, out var _owner))
+        {
+            message.Type = "ServerMessage";
+            message.IsServerHandled = true;
+            await SendAsync(_owner.EndPoint, message);
+        }
     }
 
     private async Task HandleKickRequestAsync(RelayClient requester, RelayPacket message)
@@ -671,7 +680,7 @@ internal sealed class RelayServer
             {
                 try
                 {
-                    if (DateTime.UtcNow - _client.LastSeenUtc > _clientTimeout) await RemoveClientAsync(_client, true);
+                    if (!_transport.GetIsAlive(_client.EndPoint) && DateTime.UtcNow - _client.LastSeenUtc > _clientTimeout) await RemoveClientAsync(_client, true);
                 }
                 catch (Exception _exception) { Log("ERROR", $"Client cleanup failed: {_exception.Message}"); }
             }
@@ -905,6 +914,7 @@ internal sealed class RelayServer
         _isLoading = false;
         _loadingSinceUtc = DateTime.MinValue;
         await BroadcastAllAsync(new RelayPacket { Type = "SessionReset", ClientId = owner.ClientId, SmallId = previousSmallId, OwnerClientId = 0, SessionResetRequired = true });
+        Log("INFO", $"Session reset: owner {owner.Name} departed; disconnecting {_clients.Count} remaining peers.");
         foreach (var _client in _clients.Values.ToList()) _clients.TryRemove(_client.ClientId, out _);
     }
 
@@ -938,16 +948,23 @@ internal sealed class RelayServer
         }
     }
 
-    private async Task SendAsync(IPEndPoint endpoint, RelayPacket message) => await SendBytesAsync(endpoint, SerializePacket(message));
-
-    private async Task SendBytesAsync(IPEndPoint endpoint, byte[] bytes)
+    private Task SendAsync(IPEndPoint endpoint, RelayPacket message)
     {
-        try { await _socket.SendAsync(bytes, bytes.Length, endpoint); }
-        catch (SocketException _exception) { LogRateLimited("send", "WARN", $"Send to {endpoint} failed: {_exception.SocketErrorCode}"); }
-        catch (ObjectDisposedException) { }
+        message.SessionEpoch = _sessionEpoch;
+        if (message.Payload == null) message.SceneEpoch = _sceneEpoch;
+        var _client = _clients.Values.FirstOrDefault(_entry => _entry.EndPoint.Equals(endpoint));
+        _transport.SetBudget(endpoint, _client?.ClientId == _ownerClientId ? _settings.HostBytesPerSecond : _settings.ClientBytesPerSecond);
+        _transport.SetSend(endpoint, message);
+        return Task.CompletedTask;
     }
 
-    private byte[] SerializePacket(RelayPacket message) => JsonSerializer.SerializeToUtf8Bytes(message, _jsonOptions);
+    private Task SendBytesAsync(IPEndPoint endpoint, byte[] bytes) => SendAsync(endpoint, WireProtocol.GetDecode(bytes));
+    private byte[] SerializePacket(RelayPacket message)
+    {
+        message.SessionEpoch = _sessionEpoch;
+        if (message.Payload == null) message.SceneEpoch = _sceneEpoch;
+        return WireProtocol.GetEncode(message);
+    }
 
     private string GetLogPath() => Path.Combine(_logDirectory, $"relay-{DateTime.UtcNow:yyyy-MM-dd}.log");
 
@@ -1100,10 +1117,9 @@ internal sealed class RelayServer
 
 internal sealed class RelayClient
 {
-    private const double _packetsPerSecond = 500;
-    private const double _burstPackets = 1500;
-    private double _packetTokens = _burstPackets;
-    private DateTime _packetRefillUtc = DateTime.UtcNow;
+    public string? JoinStage { get; set; } = "TransportAccepted";
+    public uint CatchupId { get; set; }
+    public int MissingCount { get; set; }
 
     public RelayClient(int clientId, byte smallId, IPEndPoint endPoint, string name, ulong platformId, string persistentPlayerId)
     {
@@ -1126,62 +1142,6 @@ internal sealed class RelayClient
     public string SessionToken { get; }
     public DateTime LastSeenUtc { get; set; }
 
-    public bool TryConsumePacketBudget()
-    {
-        var _now = DateTime.UtcNow;
-        var _elapsed = (_now - _packetRefillUtc).TotalSeconds;
-        if (_elapsed > 0)
-        {
-            _packetTokens = Math.Min(_burstPackets, _packetTokens + _elapsed * _packetsPerSecond);
-            _packetRefillUtc = _now;
-        }
-        if (_packetTokens < 1) return false;
-        _packetTokens -= 1;
-        return true;
-    }
-}
-
-internal sealed class RelayPacket
-{
-    public string Type { get; set; } = string.Empty;
-    public int ClientId { get; set; }
-    public byte SmallId { get; set; }
-    public byte PreviousSmallId { get; set; }
-    public int OwnerClientId { get; set; }
-    public int TargetClientId { get; set; }
-    public int ExcludeClientId { get; set; }
-    public byte TargetSmallId { get; set; }
-    public byte ExcludeSmallId { get; set; }
-    public int ProtocolVersion { get; set; }
-    public bool OwnerChanged { get; set; }
-    public bool SessionResetRequired { get; set; }
-    public bool IsServerHandled { get; set; }
-    public int Channel { get; set; }
-    public ulong PlatformId { get; set; }
-    public ulong TargetPlatformId { get; set; }
-    public string? ServerId { get; set; }
-    public string? SessionToken { get; set; }
-    public string? LevelBarcode { get; set; }
-    public string? LoadingScreenBarcode { get; set; }
-    public bool IsLoading { get; set; }
-    public bool AnticheatEnabled { get; set; }
-    public bool IsOperator { get; set; }
-    public int PlayerCount { get; set; }
-    public int MaxPlayers { get; set; }
-    public string? ServerName { get; set; }
-    public string? HostName { get; set; }
-    public string? GamemodeTitle { get; set; }
-    public string? GamemodeBarcode { get; set; }
-    public string? ServerVersion { get; set; }
-    public string? Name { get; set; }
-    public string? Reason { get; set; }
-    public string? PersistentPlayerId { get; set; }
-    public string? Mode { get; set; }
-    public string? Payload { get; set; }
-    public string? SettingsJson { get; set; }
-    public string? Command { get; set; }
-    public string? CommandArgs { get; set; }
-    public string? RequestId { get; set; }
 }
 
 internal sealed class RelayState
@@ -1196,6 +1156,8 @@ internal sealed class RelayState
 internal sealed class RelaySettings
 {
     public const int DefaultPort = 28430;
+    public int ClientBytesPerSecond { get; set; } = 1024 * 1024;
+    public int HostBytesPerSecond { get; set; } = 4 * 1024 * 1024;
     public bool AnticheatEnabled { get; set; }
     public int Port { get; set; } = DefaultPort;
     public int MaxPlayers { get; set; } = 255;

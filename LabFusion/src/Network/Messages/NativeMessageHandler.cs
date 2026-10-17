@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 
 using LabFusion.Exceptions;
 using LabFusion.Network.Serialization;
@@ -88,6 +88,9 @@ public abstract class NativeMessageHandler : MessageHandler
                 var payload = new ReceivedMessage()
                 {
                     Route = route,
+                    SceneEpoch = message.SceneEpoch,
+                    TransportSequence = message.TransportSequence,
+                    CatchupId = message.CatchupId,
                     Sender = sender,
                     PlatformID = platformID,
                     Bytes = bytes,

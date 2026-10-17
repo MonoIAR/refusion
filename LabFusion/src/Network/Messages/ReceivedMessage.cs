@@ -1,4 +1,4 @@
-﻿using LabFusion.Network.Serialization;
+using LabFusion.Network.Serialization;
 
 namespace LabFusion.Network;
 
@@ -7,6 +7,10 @@ namespace LabFusion.Network;
 /// </summary>
 public struct ReceivedMessage
 {
+    public uint SceneEpoch { get; set; }
+    public uint TransportSequence { get; set; }
+    public uint CatchupId { get; set; }
+
     /// <summary>
     /// The route that this message was sent through, including its relay type, network channel, and targets.
     /// </summary>

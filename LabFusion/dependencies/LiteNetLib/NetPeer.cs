@@ -1,4 +1,4 @@
-﻿#if DEBUG
+#if DEBUG
 #define STATS_ENABLED
 #endif
 using System;
@@ -944,12 +944,24 @@ namespace LiteNetLib
         {
             if (p.IsFragmented)
             {
+                if (p.FragmentsTotal == 0 || p.FragmentsTotal > 64 || p.FragmentPart >= p.FragmentsTotal || p.Size < NetConstants.FragmentedHeaderTotalSize)
+                {
+                    NetManager.PoolRecycle(p);
+                    NetManager.DisconnectPeer(this);
+                    return;
+                }
                 NetDebug.Write($"Fragment. Id: {p.FragmentId}, Part: {p.FragmentPart}, Total: {p.FragmentsTotal}");
                 //Get needed array from dictionary
                 ushort packetFragId = p.FragmentId;
                 byte packetChannelId = p.ChannelId;
                 if (!_holdedFragments.TryGetValue(packetFragId, out var incomingFragments))
                 {
+                    if (_holdedFragments.Count >= 32)
+                    {
+                        NetManager.PoolRecycle(p);
+                        NetManager.DisconnectPeer(this);
+                        return;
+                    }
                     incomingFragments = new IncomingFragments
                     {
                         Fragments = new NetPacket[p.FragmentsTotal],
@@ -964,10 +976,16 @@ namespace LiteNetLib
                 //Error check
                 if (p.FragmentPart >= fragments.Length ||
                     fragments[p.FragmentPart] != null ||
-                    p.ChannelId != incomingFragments.ChannelId)
+                    p.ChannelId != incomingFragments.ChannelId || p.FragmentsTotal != fragments.Length)
                 {
                     NetManager.PoolRecycle(p);
                     NetDebug.WriteError("Invalid fragment packet");
+                    return;
+                }
+                if (incomingFragments.TotalSize + p.Size - NetConstants.FragmentedHeaderTotalSize > 65536)
+                {
+                    NetManager.PoolRecycle(p);
+                    NetManager.DisconnectPeer(this);
                     return;
                 }
                 //Fill array

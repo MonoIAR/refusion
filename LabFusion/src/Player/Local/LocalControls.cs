@@ -16,9 +16,15 @@ public static class LocalControls
 
     private static bool _disableInteraction = false;
     public static bool DisableInteraction
-    { 
+    {
         get
         {
+            // Catchup uses its own independent state so gamemode locks are never overwritten
+            if (WorldCatchup.IsPending)
+            {
+                return true;
+            }
+
             return _disableInteraction;
         }
         set

@@ -6,8 +6,6 @@ using LabFusion.Data;
 
 using MelonLoader;
 
-using System.Collections;
-
 namespace LabFusion.Entities;
 
 public static class NetworkEntityManager
@@ -25,9 +23,14 @@ public static class NetworkEntityManager
 
     public static void OnInitializeManager()
     {
-        CatchupManager.OnPlayerServerCatchup += OnPlayerServerCatchup;
         IDManager.OnEntityRegistered += OnEntityRegistered;
+        IDManager.OnEntityUnregistered += OnEntityUnregistered;
         MultiplayerHooking.OnPlayerLeft += OnPlayerLeft;
+    }
+
+    private static void OnEntityUnregistered(NetworkEntity entity)
+    {
+        WorldCatchup.SetDestroyed(entity.ID);
     }
 
     public static void OnCleanupIds()
@@ -105,51 +108,6 @@ public static class NetworkEntityManager
         {
             entity.OnPlayerLeft(playerID);
         }
-    }
-
-    private static void OnPlayerServerCatchup(PlayerID playerID)
-    {
-        MelonCoroutines.Start(SendCreationCatchupCoroutine(playerID));
-    }
-
-    private static IEnumerator SendCreationCatchupCoroutine(PlayerID playerID)
-    {
-        var catchupQueue = new Queue<NetworkEntity>(IDManager.RegisteredEntities.IDEntityLookup.Values);
-
-        while (catchupQueue.Count > 0 && !FusionSceneManager.IsLoading() && playerID.IsValid)
-        {
-            var entity = catchupQueue.Dequeue();
-
-            if (!entity.IsRegistered)
-            {
-                continue;
-            }
-
-            bool sent = SendCreationCatchup(entity, playerID);
-
-            if (!sent)
-            {
-                continue;
-            }
-
-            yield return null;
-
-            yield return null;
-        }
-    }
-
-    private static bool SendCreationCatchup(NetworkEntity entity, PlayerID playerId)
-    {
-        try
-        {
-            return entity.InvokeCreationCatchup(playerId);
-        }
-        catch (Exception e)
-        {
-            FusionLogger.LogException("sending creation catchup for NetworkEntity", e);
-        }
-
-        return false;
     }
 
     public static void OnUpdate(float deltaTime)

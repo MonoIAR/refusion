@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <_RefusionVersionSource>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)LabFusion/src/Mod.cs'))</_RefusionVersionSource>
+    <_RefusionProductVersion>$([System.Text.RegularExpressions.Regex]::Match('$(_RefusionVersionSource)', '(?&lt;=VersionString = &quot;)[0-9.]+').Value)</_RefusionProductVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Shared/Refusion/**/*.cs" Link="Refusion/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="$(MSBuildThisFileDirectory)LabFusion/dependencies/LiteNetLib/**/*.cs" Link="LiteNetLib/%(RecursiveDir)%(Filename)%(Extension)" Condition="'$(MSBuildProjectName)' != 'LabFusion'" />
+  </ItemGroup>
+  <Target Name="GetGenerateRefusionVersion" BeforeTargets="CoreCompile">
+    <Error Condition="'$(_RefusionProductVersion)' == ''" Text="Cannot read FusionVersion.VersionString from Mod.cs." />
+    <WriteLinesToFile File="$(IntermediateOutputPath)RefusionVersion.g.cs" Lines="namespace Refusion.Transport { internal static class ProductVersion { public const string Value = &quot;$(_RefusionProductVersion)&quot;%3B } }" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup><Compile Include="$(IntermediateOutputPath)RefusionVersion.g.cs" /></ItemGroup>
+  </Target>
+</Project>

@@ -4,7 +4,7 @@ namespace LabFusion.Network;
 
 public static class RelayMessageDispatcher
 {
-    public static void Dispatch(byte[] messageBytes, bool isServerHandled = false, ulong? platformID = null)
+    public static void Dispatch(byte[] messageBytes, bool isServerHandled = false, ulong? platformID = null, uint sceneEpoch = 0, uint sequence = 0, uint catchupId = 0)
     {
         if (messageBytes == null || messageBytes.Length == 0) return;
         try
@@ -20,6 +20,9 @@ public static class RelayMessageDispatcher
                         Buffer = _messageSpan,
                         IsServerHandled = isServerHandled,
                         PlatformID = platformID,
+                        SceneEpoch = sceneEpoch,
+                        TransportSequence = sequence,
+                        CatchupId = catchupId,
                     };
 
                     NativeMessageHandler.ReadMessage(_readableMessage);

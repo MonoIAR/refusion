@@ -34,6 +34,8 @@ public class EntityPoseUpdateMessage : NativeMessageHandler
         // Validate the entity
         if (entity == null || !entity.IsRegistered || entity.OwnerID == null || entity.OwnerID != received.Sender)
         {
+            if (entity == null) WorldCatchup.SetMissingEntity(data.Entity.ID);
+
             return;
         }
 

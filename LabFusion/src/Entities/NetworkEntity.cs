@@ -23,6 +23,8 @@ public sealed class NetworkEntity : INetworkRegistrable, INetworkOwnable
 
     private PlayerID _ownerID = null;
 
+    private uint _ownerRevision = 0;
+
     /// <summary>
     /// The identifier for this entity.
     /// </summary>
@@ -72,6 +74,16 @@ public sealed class NetworkEntity : INetworkRegistrable, INetworkOwnable
     /// The source of the entity's creation.
     /// </summary>
     public EntitySource Source { get; set; } = EntitySource.None;
+
+    /// <summary>
+    /// Revision counter for ownership changes, used to reject stale ownership during catchup.
+    /// </summary>
+    public uint OwnerRevision => _ownerRevision;
+
+    /// <summary>
+    /// The barcode of the spawnable that created this entity, if any. Null for scene entities.
+    /// </summary>
+    public string SpawnBarcode { get; set; } = null;
 
     /// <summary>
     /// Invoked when the entity is unregistered.
@@ -247,6 +259,33 @@ public sealed class NetworkEntity : INetworkRegistrable, INetworkOwnable
         _dataCaughtUpPlayers.Clear();
     }
 
+    /// <summary>
+    /// Returns if this NetworkEntity has a creation catchup hook to send to new players.
+    /// </summary>
+    public bool GetHasCreationCatchup() => OnEntityCreationCatchup != null;
+
+    /// <summary>
+    /// Returns if this NetworkEntity still owes data catchup to a specific Player.
+    /// </summary>
+    public bool GetHasPendingDataCatchup(PlayerID playerID) => _dataCatchupCallbacks.ContainsKey(playerID.SmallID);
+
+    /// <summary>
+    /// Gives up waiting for data catchup hooks registered by a specific Player.
+    /// </summary>
+    public void SetCancelDataCatchup(PlayerID playerID)
+    {
+        _dataCatchupCallbacks.Remove(playerID.SmallID);
+    }
+
+    /// <summary>
+    /// Clears all data catchup state, used when a session or scene is reset.
+    /// </summary>
+    public void SetClearDataCatchup()
+    {
+        _dataCaughtUpPlayers.Clear();
+        _dataCatchupCallbacks.Clear();
+    }
+
     public void Queue(ushort queuedId)
     {
         _queueID = queuedId;
@@ -303,8 +342,16 @@ public sealed class NetworkEntity : INetworkRegistrable, INetworkOwnable
         }
 
         _ownerID = ownerID;
+        _ownerRevision++;
 
         OnEntityOwnershipTransfer?.Invoke(this, ownerID);
+    }
+
+    public void SetOwner(PlayerID ownerID, uint revision)
+    {
+        _ownerRevision = revision;
+
+        SetOwner(ownerID);
     }
 
     public void RemoveOwner()

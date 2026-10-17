@@ -69,6 +69,8 @@ public abstract class MessageHandler
         }
         catch (Exception e)
         {
+            WorldCatchup.SetMessageFailed(received, e.Message);
+
             FusionLogger.LogException($"handling message of type {GetType().Name}", e);
         }
     }

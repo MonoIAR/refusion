@@ -52,6 +52,11 @@ public class SpawnResponseMessage : NativeMessageHandler
     {
         var data = received.ReadData<SpawnResponseData>();
 
+        if (!WorldCatchup.GetTryBeginSpawn(data.EntityID))
+        {
+            return;
+        }
+
         var spawnData = data.SpawnData;
 
         byte owner = data.OwnerID;
@@ -67,6 +72,8 @@ public class SpawnResponseMessage : NativeMessageHandler
             FusionLogger.Warn($"Blocking client spawn of spawnable {data.SpawnData.Barcode} because it is blacklisted!");
 #endif
 
+            WorldCatchup.SetContentMissing(entityID, barcode, "blacklisted");
+
             return;
         }
 
@@ -79,13 +86,19 @@ public class SpawnResponseMessage : NativeMessageHandler
             // Check if we should download the mod (it's not blacklisted, mod downloading disabled, etc.)
             if (!shouldDownload)
             {
+                WorldCatchup.SetContentMissing(entityID, barcode, "download_disabled");
+
                 return;
             }
 
             long maxBytes = DataConversions.ConvertMegabytesToBytes(ClientSettings.Downloading.MaxFileSize.Value);
 
+            var scope = WorldCatchup.GetScope();
+
+            WorldCatchup.SetDownloading(entityID);
+
             NetworkModRequester.RequestAndInstallMod(new NetworkModRequester.ModInstallInfo()
-            { 
+            {
                 Target = owner,
                 Barcode = barcode,
                 FinishDownloadCallback = OnModDownloaded,
@@ -94,9 +107,17 @@ public class SpawnResponseMessage : NativeMessageHandler
 
             void OnModDownloaded(DownloadCallbackInfo info)
             {
+                if (!scope.GetIsCurrent())
+                {
+                    return;
+                }
+
                 if (info.Result != ModResult.SUCCEEDED)
                 {
                     FusionLogger.Warn($"Failed downloading spawnable {barcode}!");
+
+                    WorldCatchup.SetContentMissing(entityID, barcode, "download_failed");
+
                     return;
                 }
 
@@ -167,6 +188,8 @@ public class SpawnResponseMessage : NativeMessageHandler
                 Entity = newEntity,
             });
         }
+
+        WorldCatchup.SetSpawnFinished(data.EntityID);
     }
 
     private static NetworkEntity CreateNetworkEntity(GameObject gameObject, string barcode, MarrowEntity marrowEntity, byte ownerID, ushort entityID, EntitySource source)
@@ -177,6 +200,7 @@ public class SpawnResponseMessage : NativeMessageHandler
         NetworkEntity networkEntity = new()
         {
             Source = source,
+            SpawnBarcode = barcode,
         };
         networkEntity.SetOwner(playerID);
 

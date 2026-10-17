@@ -1,3 +1,5 @@
+using Refusion.Transport;
+using System.Diagnostics;
 using LabFusion.Data;
 using LabFusion.Player;
 using LabFusion.Utilities;
@@ -24,6 +26,12 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     public override string Platform => "DedicatedServer";
 
     public override bool IsHost => _isServerActive;
+    public override bool ServerCanSendToHost => false;
+    public Guid SessionEpoch { get; private set; }
+    public uint SceneEpoch { get; private set; }
+    public int ConnectionGeneration => _joinAttempt;
+    private bool _serverLoading;
+    public long GetReliableBacklog() => _transport?.GetPendingBytes() ?? 0;
     public override bool IsClient => _isConnectionActive;
 
     private INetworkLobby _currentLobby;
@@ -38,12 +46,11 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     protected bool _isServerActive = false;
     protected bool _isConnectionActive = false;
     public bool RelayOperator => _isRelayOperator;
-    private UdpClient _udpClient;
+    private RelayTransport _transport;
     private IPEndPoint _relayEndpoint;
     private string _serverAddress = string.Empty;
     private readonly ConcurrentQueue<Action> _mainThreadActions = new();
     private int _joinAttempt;
-    private CancellationTokenSource _receiveSource;
     private int _clientId;
     private byte _smallId;
     private int _ownerClientId;
@@ -55,14 +62,13 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     private DateTime _fusionJoinDeadlineUtc = DateTime.MinValue;
     private DateTime _lastOverflowWarnUtc = DateTime.MinValue;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly ConcurrentQueue<RelayPacket> _receivedPackets = new();
     private readonly ConcurrentQueue<RelayPacket> _serverCommands = new();
     private static readonly ConcurrentDictionary<ulong, byte> _relaySmallIds = new();
     private static readonly ConcurrentDictionary<ulong, bool> _relayOperators = new();
     private static readonly ConcurrentDictionary<ulong, string> _relayPersistentIds = new();
 
-    private const string _serverVersion = "0.1.0";
-    private const int _protocolVersion = 2;
+    private const string _serverVersion = ProductVersion.Value;
+    private const int _protocolVersion = WireProtocol.Version;
     private const int _receivedPacketLimit = 1024;
     private const int _receivedPacketDrainBudget = 256;
     private static readonly TimeSpan _joinTimeout = TimeSpan.FromSeconds(10);
@@ -125,7 +131,7 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             try { _action(); }
             catch (Exception _exception) { FusionLogger.LogException("executing a queued relay action", _exception); }
         }
-        if (_udpClient == null || !_isConnectionActive) return;
+        if (_transport == null || !_isConnectionActive) return;
         if (_clientId == 0 && DateTime.UtcNow > _joinDeadlineUtc)
         {
             Disconnect("The server did not respond.");
@@ -150,7 +156,13 @@ public class DedicatedServerNetworkLayer : NetworkLayer
                 SendConnectionRequestSafe();
             }
         }
-        for (var _i = 0; _i < _receivedPacketDrainBudget && _receivedPackets.TryDequeue(out var _packet); _i++) HandleRelayPacket(_packet);
+        var _clock = Stopwatch.StartNew();
+        for (var _i = 0; _i < _receivedPacketDrainBudget && _clock.Elapsed.TotalMilliseconds < 2 && _transport != null && _transport.GetTryReceive(out var _received); _i++)
+        {
+            if (_received.Local) { Disconnect(_received.Packet.Reason); break; }
+            HandleRelayPacket(_received.Packet);
+        }
+        WorldCatchup.SetUpdate();
         while (_serverCommands.TryDequeue(out var _command)) ExecuteServerCommand(_command);
         if (DateTime.UtcNow - _lastPingUtc > TimeSpan.FromSeconds(5))
         {
@@ -163,7 +175,7 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     {
         try
         {
-            if (!NetworkInfo.HasServer || _isServerActive) return;
+            if (!NetworkInfo.HasServer || _isServerActive || _serverLoading) return;
             ConnectionSender.SendConnectionRequest();
 #if DEBUG
             FusionLogger.Log("Sent a connection request to the dedicated server.");
@@ -184,6 +196,8 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
     public override void SetServerLoading(bool isLoading)
     {
+        if (!IsHost) return;
+        if (isLoading) { SceneEpoch++; WorldCatchup.SetReset(); }
         SendRelayPacket(new RelayPacket { Type = "RawForward", ClientId = _clientId, Mode = "ServerLoadingState", IsLoading = isLoading });
     }
 
@@ -207,6 +221,17 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         {
             SendRelayPacket(CreateForwardPacket("ClientMessage", channel, message));
         }
+    }
+
+    public override void BroadcastMessageExcept(byte userId, NetworkChannel channel, NetMessage message, bool ignoreHost = true)
+    {
+        if (IsHost) SendRelayPacket(CreateForwardPacket("ServerBroadcastExcept", channel, message, excludeSmallId: userId));
+    }
+
+    public override void BroadcastMessageExcept(ulong userId, NetworkChannel channel, NetMessage message, bool ignoreHost = true)
+    {
+        var _id = PlayerIDManager.GetPlayerID(userId);
+        if (_id != null) BroadcastMessageExcept(_id.SmallID, channel, message, ignoreHost);
     }
 
     public override void SendToServer(NetworkChannel channel, NetMessage message)
@@ -251,6 +276,7 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         var _target = PlayerIDManager.GetPlayerID(userId);
         if (_target != null)
         {
+            if (_target.IsMe) { RelayMessageDispatcher.Dispatch(message.ToByteArray(), false, PlayerIDManager.LocalPlatformID); return; }
             SendRelayPacket(CreateForwardPacket("ServerTarget", channel, message, _target.SmallID));
             return;
         }
@@ -278,8 +304,8 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         try
         {
             if (_clientId != 0) SendRelayPacket(new RelayPacket { Type = "Leave", ClientId = _clientId });
-            _receiveSource?.Cancel();
-            _udpClient?.Dispose();
+            _transport?.SetDisconnect(_relayEndpoint, "leave");
+            _transport?.Dispose();
         }
         catch
         {
@@ -288,8 +314,12 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
         _isServerActive = false;
         _isConnectionActive = false;
-        _udpClient = null;
-        _receiveSource = null;
+        _transport = null;
+        SessionEpoch = Guid.Empty;
+        SceneEpoch = 0;
+        WorldCatchup.SetReset();
+        while (_serverCommands.TryDequeue(out _)) { }
+        while (_mainThreadActions.TryDequeue(out _)) { }
         _clientId = 0;
         _smallId = 0;
         _ownerClientId = 0;
@@ -396,51 +426,14 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         if (_isConnectionActive || _isServerActive) Disconnect();
         _serverAddress = address;
         _relayEndpoint = endpoint;
-        _udpClient = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
-        if (OperatingSystem.IsWindows())
-        {
-            // SIO_UDP_CONNRESET: an ICMP port-unreachable must not abort pending receives on Windows.
-            try { _udpClient.Client.IOControl(unchecked((int)0x9800000C), new byte[4], null); } catch { }
-        }
-        _receiveSource = new CancellationTokenSource();
+        _transport = new RelayTransport();
+        _transport.SetConnect(endpoint);
         _isConnectionActive = true;
         _lastPingUtc = DateTime.UtcNow;
         _joinDeadlineUtc = DateTime.UtcNow + _joinTimeout;
         _lastFusionJoinRetryUtc = DateTime.MinValue;
         _fusionJoinDeadlineUtc = DateTime.MinValue;
-        _ = ReceiveRelayPacketsAsync(_receiveSource.Token);
         SendRelayPacket(new RelayPacket { Type = "Hello", ServerVersion = _serverVersion, ProtocolVersion = _protocolVersion, PersistentPlayerId = RefusionIdentity.PlayerId, PlatformId = PlayerIDManager.LocalPlatformID, Name = LocalPlayer.Username });
-    }
-
-    private async Task ReceiveRelayPacketsAsync(CancellationToken token)
-    {
-        try
-        {
-            while (!token.IsCancellationRequested && _udpClient != null)
-            {
-                var _result = await _udpClient.ReceiveAsync(token);
-                RelayPacket _packet;
-                try { _packet = JsonSerializer.Deserialize<RelayPacket>(_result.Buffer, _jsonOptions); }
-                catch (JsonException) { continue; }
-                if (_packet == null) continue;
-#if DEBUG
-                if (_fusionJoinDeadlineUtc != DateTime.MinValue) FusionLogger.Log($"Relay packet while joining: {_packet.Type} ({_result.Buffer.Length} bytes).");
-#endif
-                if (_receivedPackets.Count >= _receivedPacketLimit)
-                {
-                    if (DateTime.UtcNow - _lastOverflowWarnUtc > TimeSpan.FromSeconds(5))
-                    {
-                        _lastOverflowWarnUtc = DateTime.UtcNow;
-                        FusionLogger.Warn("The relay receive queue is full; dropping packets.");
-                    }
-                    continue;
-                }
-                _receivedPackets.Enqueue(_packet);
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch (ObjectDisposedException) { }
-        catch (Exception _exception) { FusionLogger.LogException("receiving dedicated server data", _exception); }
     }
 
     private void HandleRelayPacket(RelayPacket packet)
@@ -457,6 +450,12 @@ public class DedicatedServerNetworkLayer : NetworkLayer
         }
         if (packet.Type.Equals("Welcome", StringComparison.OrdinalIgnoreCase))
         {
+            if (_clientId != 0) return;
+            if (packet.ProtocolVersion != _protocolVersion || packet.ServerVersion != _serverVersion) { Disconnect("Version mismatch: update both client and relay."); return; }
+            SessionEpoch = packet.SessionEpoch;
+            SceneEpoch = packet.SceneEpoch;
+            _serverLoading = packet.IsLoading;
+            _transport.SetBudget(_relayEndpoint, packet.SmallId == 0 ? packet.HostBytesPerSecond : packet.ClientBytesPerSecond);
             _clientId = packet.ClientId;
             _smallId = packet.SmallId;
             _ownerClientId = packet.OwnerClientId;
@@ -471,11 +470,13 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             else
             {
                 _lastFusionJoinRetryUtc = DateTime.UtcNow;
-                _fusionJoinDeadlineUtc = DateTime.UtcNow + _fusionJoinTimeout;
+                _fusionJoinDeadlineUtc = DateTime.UtcNow + TimeSpan.FromSeconds(180);
                 SendConnectionRequestSafe();
             }
             return;
         }
+        if (packet.SessionEpoch != SessionEpoch) return;
+        if (packet.Type == "LoadingState") { _serverLoading = packet.IsLoading; return; }
         if (packet.Type.Equals("SettingsState", StringComparison.OrdinalIgnoreCase))
         {
             if (string.IsNullOrWhiteSpace(packet.SettingsJson)) return;
@@ -497,24 +498,18 @@ public class DedicatedServerNetworkLayer : NetworkLayer
             Notifier.Send(new Notification { Title = packet.Type.Equals("Motd", StringComparison.OrdinalIgnoreCase) ? "Server MOTD" : packet.Name ?? "Server", Message = packet.Reason ?? string.Empty, PopupLength = 5f, ShowPopup = true, SaveToMenu = true, Type = NotificationType.INFORMATION });
             return;
         }
-        if (packet.Type.Equals("SceneState", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.IsNullOrWhiteSpace(packet.LevelBarcode))
-            {
-                // Before our own connection response is processed, the level load message from the host drives the scene instead.
-                // Applying the relay scene state early would load the level twice (it resets the target flags the host's load sets)
-                if (PlayerIDManager.LocalID == null) return;
-                FusionSceneManager.SetTargetScene(packet.LevelBarcode, packet.LoadingScreenBarcode ?? string.Empty);
-            }
-            return;
-        }
+        if (packet.Type == "SceneState") { _serverLoading = packet.IsLoading; return; }
         if (packet.Type.Equals("ServerMessage", StringComparison.OrdinalIgnoreCase) || packet.Type.Equals("ClientMessage", StringComparison.OrdinalIgnoreCase) || packet.Type.Equals("RawForward", StringComparison.OrdinalIgnoreCase))
         {
-            if (!TryDecodePayload(packet.Payload, out var _payload)) return;
+            var _payload = packet.Payload;
+            if (!FusionEnvelope.GetTryParse(_payload, out var _prefix)) return;
+            if (_prefix.Tag == NativeMessageTag.SceneLoad && packet.SceneEpoch > SceneEpoch) { SceneEpoch = packet.SceneEpoch; WorldCatchup.SetReset(); }
+            if (!FusionEnvelope.GetIsSessionMessage(_prefix.Tag) && packet.SceneEpoch != SceneEpoch) return;
+            if (IsHost && WorldCatchup.GetHasSnapshots() && WorldCatchup.GetTryBuffer(packet.SmallId, packet)) return;
             if (packet.Type.Equals("ServerMessage", StringComparison.OrdinalIgnoreCase) && packet.PlatformId != 0) _relaySmallIds[packet.PlatformId] = packet.SmallId;
             if (packet.PlatformId != 0) _relayOperators[packet.PlatformId] = packet.IsOperator;
             if (packet.PlatformId != 0 && !string.IsNullOrWhiteSpace(packet.PersistentPlayerId)) _relayPersistentIds[packet.PlatformId] = packet.PersistentPlayerId;
-            RelayMessageDispatcher.Dispatch(_payload, packet.IsServerHandled, packet.PlatformId);
+            RelayMessageDispatcher.Dispatch(_payload, packet.IsServerHandled, packet.PlatformId, packet.SceneEpoch, packet.Sequence, packet.CatchupId);
             return;
         }
         if (packet.Type.Equals("PlayerJoined", StringComparison.OrdinalIgnoreCase))
@@ -602,47 +597,34 @@ public class DedicatedServerNetworkLayer : NetworkLayer
 
     private void SendRelayPacket(RelayPacket packet)
     {
-        if (_udpClient == null || _relayEndpoint == null) return;
+        if (_transport == null || _relayEndpoint == null) return;
         try
         {
             packet.SessionToken = _sessionToken;
-            var _bytes = JsonSerializer.SerializeToUtf8Bytes(packet, _jsonOptions);
-            _udpClient.Send(_bytes, _bytes.Length, _relayEndpoint);
-
-#if DEBUG
-            bool _inJoinWindow = _fusionJoinDeadlineUtc != DateTime.MinValue || DateTime.UtcNow - LastJoinSendUtc < TimeSpan.FromSeconds(5);
-
-            if (_inJoinWindow)
-            {
-                FusionLogger.Log($"Relay packet sent: {packet.Type}/{packet.Mode} ({_bytes.Length} bytes).");
-            }
-
-            if (_bytes.Length > OversizePacketWarnBytes && DateTime.UtcNow - _lastOversizeWarnUtc > TimeSpan.FromSeconds(5))
-            {
-                _lastOversizeWarnUtc = DateTime.UtcNow;
-                FusionLogger.Warn($"Relay packet larger than {OversizePacketWarnBytes} bytes sent: {packet.Type}/{packet.Mode} ({_bytes.Length} bytes).");
-            }
-#endif
+            packet.SessionEpoch = SessionEpoch;
+            packet.SceneEpoch = packet.Payload != null && packet.SceneEpoch != 0 ? packet.SceneEpoch : SceneEpoch;
+            _transport.SetSend(_relayEndpoint, packet);
         }
-        catch (Exception _exception) { FusionLogger.LogException("sending dedicated server data", _exception); }
+        catch (Exception _exception) { FusionLogger.LogException("sending dedicated server data", _exception); Disconnect("Transport send failed: " + _exception.Message); }
     }
 
 #if DEBUG
-    private const int OversizePacketWarnBytes = 1100;
-    private DateTime _lastOversizeWarnUtc = DateTime.MinValue;
-
     internal static DateTime LastJoinSendUtc = DateTime.MinValue;
 #endif
 
     private RelayPacket CreateForwardPacket(string mode, NetworkChannel channel, NetMessage message, byte targetSmallId = 0, byte excludeSmallId = 0)
     {
-        return new RelayPacket { Type = "RawForward", ClientId = _clientId, Mode = mode, Channel = (int)channel, TargetSmallId = targetSmallId, ExcludeSmallId = excludeSmallId, Payload = Convert.ToBase64String(message.ToByteArray()) };
+        return new RelayPacket { Type = "RawForward", ClientId = _clientId, Mode = mode, Channel = (int)channel, TargetSmallId = targetSmallId, ExcludeSmallId = excludeSmallId, Payload = message.ToByteArray(), SceneEpoch = message.SceneEpoch, Sequence = message.TransportSequence, CatchupId = message.CatchupId != 0 ? message.CatchupId : WorldCatchup.ContextId };
     }
 
-    private static bool TryDecodePayload(string payload, out byte[] bytes)
+    public void SetJoinStage(string stage, uint catchupId, int missing)
     {
-        try { bytes = Convert.FromBase64String(payload ?? string.Empty); return bytes.Length > 0; }
-        catch { bytes = Array.Empty<byte>(); return false; }
+        SendRelayPacket(new RelayPacket { Type = "JoinState", ClientId = _clientId, JoinStage = stage, CatchupId = catchupId, MissingCount = missing });
+    }
+
+    public void SetSendBuffered(RelayPacket packet)
+    {
+        RelayMessageDispatcher.Dispatch(packet.Payload, packet.IsServerHandled, packet.PlatformId, packet.SceneEpoch, packet.Sequence, packet.CatchupId);
     }
 
     private static bool TryParseAddress(string address, out string host, out int port)
@@ -684,35 +666,6 @@ public class DedicatedServerNetworkLayer : NetworkLayer
     public static bool TryGetRelaySmallId(ulong platformId, out byte smallId) => _relaySmallIds.TryGetValue(platformId, out smallId);
     public static bool IsRelayOperator(ulong platformId) => _relayOperators.TryGetValue(platformId, out var _isOperator) && _isOperator;
     public static bool TryGetRelayPersistentId(ulong platformId, out string persistentPlayerId) => _relayPersistentIds.TryGetValue(platformId, out persistentPlayerId);
-
-    private sealed class RelayPacket
-    {
-        public string Type { get; set; } = string.Empty;
-        public int ClientId { get; set; }
-        public byte SmallId { get; set; }
-        public int OwnerClientId { get; set; }
-        public int ProtocolVersion { get; set; }
-        public ulong PlatformId { get; set; }
-        public string PersistentPlayerId { get; set; } = string.Empty;
-        public string SessionToken { get; set; } = string.Empty;
-        public string ServerVersion { get; set; } = string.Empty;
-        public string Name { get; set; } = string.Empty;
-        public string Payload { get; set; } = string.Empty;
-        public string Reason { get; set; } = string.Empty;
-        public string SettingsJson { get; set; } = string.Empty;
-        public string Mode { get; set; } = string.Empty;
-        public int Channel { get; set; }
-        public byte TargetSmallId { get; set; }
-        public byte ExcludeSmallId { get; set; }
-        public bool IsServerHandled { get; set; }
-        public bool IsOperator { get; set; }
-        public string LevelBarcode { get; set; } = string.Empty;
-        public string LoadingScreenBarcode { get; set; } = string.Empty;
-        public bool IsLoading { get; set; }
-        public string Command { get; set; } = string.Empty;
-        public string CommandArgs { get; set; } = string.Empty;
-        public string RequestId { get; set; } = string.Empty;
-    }
 
     private void HookEvents()
     {

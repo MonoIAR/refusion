@@ -1,4 +1,4 @@
-﻿using LabFusion.Network.Serialization;
+using LabFusion.Network.Serialization;
 using LabFusion.SDK.Modules;
 
 using System.Buffers.Binary;
@@ -8,6 +8,10 @@ namespace LabFusion.Network;
 
 public unsafe class NetMessage : IDisposable
 {
+    public uint SceneEpoch { get; set; }
+    public uint TransportSequence { get; set; }
+    public uint CatchupId { get; set; }
+
     private byte* _buffer;
     private int _size;
 
@@ -91,6 +95,9 @@ public unsafe class NetMessage : IDisposable
             message._buffer[i] = writer.Buffer[i];
         }
 
+        message.SceneEpoch = received.SceneEpoch;
+        message.TransportSequence = received.TransportSequence;
+        message.CatchupId = received.CatchupId;
         return message;
     }
 

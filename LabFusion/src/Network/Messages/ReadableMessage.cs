@@ -1,10 +1,14 @@
-﻿namespace LabFusion.Network;
+namespace LabFusion.Network;
 
 /// <summary>
 /// Necessary data that is passed into a MessageHandler so that it can be parsed before the message is read.
 /// </summary>
 public ref struct ReadableMessage
 {
+    public uint SceneEpoch { get; set; }
+    public uint TransportSequence { get; set; }
+    public uint CatchupId { get; set; }
+
     /// <summary>
     /// The received bytes that will be read, parsed, and then handled in a MessageHandler.
     /// </summary>

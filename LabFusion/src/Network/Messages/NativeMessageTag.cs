@@ -83,6 +83,9 @@ public static class NativeMessageTag
         ConnectionProfile = 216,
         ChunkedPayload = 217,
 
+        // World catchup control plane
+        WorldSync = 218,
+
         // RPC
         RPCEvent = 209,
         RPCInt = 210,

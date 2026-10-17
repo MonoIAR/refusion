@@ -55,6 +55,12 @@ public static class NetworkAssetSpawner
 
     public static void Spawn(SpawnRequestInfo info)
     {
+        // Spawning is restricted until the world catchup completes; the scene arrives through the manifest instead
+        if (WorldCatchup.IsPending)
+        {
+            return;
+        }
+
         uint trackerID = _lastTrackedSpawnable++;
 
         if (info.SpawnCallback != null)

@@ -4,6 +4,7 @@ using LabFusion.Network.Serialization;
 using LabFusion.Player;
 using LabFusion.Senders;
 using LabFusion.Utilities;
+using Refusion.Transport;
 
 namespace LabFusion.Network;
 
@@ -71,11 +72,6 @@ public class ConnectionResponseMessage : NativeMessageHandler
                 InternalServerHelpers.OnPlayerJoined(existing, data.IsInitialJoin);
 
                 NetworkPlayerManager.CreateNetworkPlayer(existing);
-
-                if (NetworkInfo.IsHost)
-                {
-                    CatchupPlayer(existing);
-                }
             }
 
             return;
@@ -100,6 +96,8 @@ public class ConnectionResponseMessage : NativeMessageHandler
 
             InternalServerHelpers.OnJoinServer();
 
+            WorldCatchup.SetStage(JoinStage.FusionRegistered);
+
             // Our uplink is now open: broadcast our profile and avatar so the host can relay them to everyone
             ConnectionSender.SendClientProfile();
             PlayerSender.SendPlayerAvatar(RigData.RigAvatarStats, RigData.GetAvatarBarcode());
@@ -111,18 +109,5 @@ public class ConnectionResponseMessage : NativeMessageHandler
 
             NetworkPlayerManager.CreateNetworkPlayer(data.PlayerID);
         }
-
-        // Send catchup messages now that the user is registered
-        if (NetworkInfo.IsHost)
-        {
-            CatchupPlayer(data.PlayerID);
-        }
-    }
-
-    private static void CatchupPlayer(PlayerID player)
-    {
-        // SERVER CATCHUP
-        // Catchup hooked events
-        CatchupManager.InvokePlayerServerCatchup(player);
     }
 }

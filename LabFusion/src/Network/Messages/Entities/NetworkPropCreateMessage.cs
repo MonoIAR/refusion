@@ -50,6 +50,12 @@ public class NetworkPropCreateMessage : NativeMessageHandler
             return;
         }
 
+        // A destroyed entity must not be resurrected by a late create packet
+        if (WorldCatchup.GetIsTombstone(data.EntityID))
+        {
+            return;
+        }
+
         // Check if it already has an entity attached
         if (IMarrowEntityExtender.Cache.ContainsSource(marrowEntity))
         {

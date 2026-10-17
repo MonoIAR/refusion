@@ -11,4 +11,5 @@
   <ItemGroup>
     <None Update="banner.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Import Project="../Refusion.Shared.targets" />
 </Project>

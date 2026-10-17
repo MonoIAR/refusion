@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 
 using LabFusion.Data;
 using LabFusion.Network;
@@ -40,16 +40,16 @@ public struct FusionVersion
 {
 #if DEBUG
     public const byte VersionMajor = 0;
-    public const byte VersionMinor = 2;
+    public const byte VersionMinor = 3;
     public const short VersionPatch = 0;
 
-    public const string VersionString = "0.2.0";
+    public const string VersionString = "0.3.0";
 #else
     public const byte VersionMajor = 0;
-    public const byte VersionMinor = 2;
+    public const byte VersionMinor = 3;
     public const short VersionPatch = 0;
 
-    public const string VersionString = "0.2.0";
+    public const string VersionString = "0.3.0";
 #endif
 }
 
@@ -117,6 +117,8 @@ public class FusionMod : MelonMod
 
         NetworkEntityManager.OnInitializeManager();
         NetworkPlayerManager.OnInitializeManager();
+
+        WorldCatchup.SetInitialize();
 
         PopupManager.OnInitializeMelon();
 
