@@ -2,7 +2,8 @@
 by MIAR STAFF
 
 A multiplayer mod for BONELAB, but reimagined. Connect through UDP relay server, while reworking parts of the original Fusion experience.
-[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
+
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue?style=flat-square)](LICENSE)
 
 > [!TIP]
 > Many parts of the code are **AI-GENERATED**. IF YOU HATE AI, THIS IS YOUR WARNING.
