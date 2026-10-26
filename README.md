@@ -1,26 +1,26 @@
 # Refusion 
 by MIAR STAFF
 
-A multiplayer mod for BONELAB, but reimagined. Connect through UDP relay server, with overall improvements.
+A multiplayer mod for BONELAB, but reimagined. Connect through UDP relay server, while reworking parts of the original Fusion experience.
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 
 > [!TIP]
-> Many parts of this project are AI-generated.
-> Please DO NOT use or criticize it if you hate AI.
-
-
+> Many parts of the code are **AI-GENERATED**. IF YOU HATE AI, THIS IS YOUR WARNING.
 
 ## Documentation
-For more information, check out [LabFusion's wiki](https://github.com/Lakatrazz/BONELAB-Fusion/wiki).
+For SDK documentation, see the [LabFusion wiki](https://github.com/Lakatrazz/BONELAB-Fusion/wiki).
 
 ## Networking
-This mod is networked through a dedicated UDP relay server. Players join by entering the relay's IP address and port; no Steam networking is used.
+Refusion uses dedicated UDP relay server for multiplayer traffic. Players connect using the relay server's address and port, without requiring Steam Networking.
+A server is required for self-hosting, but you can also use your PC as relay server.
 
 ## Compatibility
 Refusion is *supposed to be* compatible with all Fusion modules and SDK features. But if you find any compatibility issues, please report in the issue tracker, or [MIAR STAFF Discord](https://discord.gg/TTevnjERxR).
 
 ## Credits
-- The foundation of this project: [LabFusion](https://github.com/Lakatrazz/BONELAB-Fusion)
-- Main developer: [ChakerAt](https://github.com/cha-at), [CAitVR](https://github.com/RTX9999ti)
+Refusion is based on the work of the [LabFusion](https://github.com/Lakatrazz/BONELAB-Fusion) project. We are grateful to its original developers and contributors.
+
+Refusion developer: [ChakerAt](https://github.com/cha-at), [CAitVR](https://github.com/RTX9999ti)
 
 ## Licensing
 Refusion is licensed under the [GNU General Public License v3.0](LICENSE). The following exceptions and attributions apply:
@@ -33,5 +33,4 @@ Refusion is licensed under the [GNU General Public License v3.0](LICENSE). The f
 - Third-party assets under `LabFusion/FusionBundles/Assets` (e.g. shaders and textures) are excluded from the licenses above and remain the property of their respective owners.
 
 ## Disclaimer
-
-#### THIS PROJECT IS NOT AFFILIATED WITH ANY OTHER MULTIPLAYER MODS OR STRESS LEVEL ZERO! This is its own standalone mod and shares no code with others, any similarities are coincidental!
+THIS PROJECT IS NOT AFFILIATED WITH OR SUPPORTED BY ANY OTHER MULTIPLAYER MODS OR STRESS LEVEL ZERO.
